@@ -1,4 +1,5 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 
 export interface VrataConfig { apiKey: string; baseUrl: string }
 export interface VrataModel {
@@ -9,7 +10,14 @@ export interface VrataModel {
   maxTokens: number;
   images: boolean;
   tools: boolean;
+  reasoning: boolean;
+  transport: "chat_completions" | "responses" | "messages";
 }
+
+const builtinReasoning = new Map(
+  ["openai", "anthropic", "google", "xai", "deepseek", "mistral", "zai"].flatMap((provider) =>
+    getBuiltinModels(provider as Parameters<typeof getBuiltinModels>[0]).map((model) => [model.id, model.reasoning] as const)),
+);
 
 export function apiBaseUrl(value: string): string {
   const url = new URL(value);
@@ -39,6 +47,10 @@ export function parseModels(input: unknown, protocol: VrataModel["protocol"] = "
       maxTokens: positive(meta.max_output_tokens, 4_096),
       images: meta.supports_images === true,
       tools: meta.supports_tools === true,
+      reasoning: typeof meta.supports_reasoning === "boolean" ? meta.supports_reasoning : builtinReasoning.get(candidate.id) === true,
+      transport: meta.verified_transport === "chat_completions" ? "chat_completions"
+        : meta.verified_transport === "messages" ? "messages"
+        : protocol === "anthropic" ? "messages" : "responses",
     });
   }
   return result;
@@ -71,10 +83,10 @@ export function piModel(model: VrataModel, config: VrataConfig): Model<Api> {
   return {
     id: model.id,
     name: model.name,
-    api: model.protocol === "anthropic" ? "anthropic-messages" : "openai-completions",
+    api: model.protocol === "anthropic" ? "anthropic-messages" : model.transport === "chat_completions" ? "openai-completions" : "openai-responses",
     provider: "vrata",
     baseUrl: model.protocol === "anthropic" ? new URL(config.baseUrl).origin : apiBaseUrl(config.baseUrl),
-    reasoning: false,
+    reasoning: model.reasoning,
     input: model.images ? ["text", "image"] : ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: model.contextWindow,

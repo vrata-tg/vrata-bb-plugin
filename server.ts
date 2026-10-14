@@ -2,14 +2,14 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { credentialsContract, DEFAULT_BASE_URL, setupContract } from "./contract.js";
 import { fetchModels } from "./vrata.js";
 
-const autoModel = {
-  id: "vrata-auto",
-  model: "vrata-auto",
-  displayName: "Авто · Врата AI",
+const setupModel = {
+  id: "vrata-setup",
+  model: "vrata-setup",
+  displayName: "Ввести ключ и выбрать модель",
   routeProviderId: "vrata",
-  description: "Выбрать доступную модель автоматически; при первом запросе спросить ключ",
-  supportedReasoningEfforts: [{ reasoningEffort: "medium" as const, description: "Стандартный режим" }],
-  defaultReasoningEffort: "medium" as const,
+  description: "Ввести ключ и выбрать модель в треде",
+  supportedReasoningEfforts: [{ reasoningEffort: "none" as const, description: "Без рассуждений" }],
+  defaultReasoningEffort: "none" as const,
   isDefault: true,
 };
 
@@ -49,7 +49,7 @@ export default function plugin(bb: BbPluginApi): void {
   function backgroundSync(): void {
     void sync().catch((error) => bb.log.warn(`Could not synchronize Врата AI configuration: ${String(error)}`));
   }
-  settings.onChange(backgroundSync);
+  settings.onChange(() => { backgroundSync(); refreshProvider(); });
   bb.background.service("credentials", {
     start(signal) {
       backgroundSync();
@@ -76,7 +76,7 @@ export default function plugin(bb: BbPluginApi): void {
     },
   });
 
-  bb.providers.register({
+  function registerProvider() { return bb.providers.register({
     id: "vrata",
     displayName: "Врата AI (Pi)",
     icon: "Sparkles",
@@ -97,8 +97,13 @@ export default function plugin(bb: BbPluginApi): void {
       supportsThreadArchive: false,
       supportsThreadRename: false,
       permissionModes: ["full"],
-      reasoningLevels: ["medium"],
+      reasoningLevels: ["none", "low", "medium", "high", "xhigh", "max"],
     },
-    models: { fallback: [autoModel], scope: "host" },
-  });
+    models: { fallback: [setupModel], scope: "host" },
+  }); }
+  let provider = registerProvider();
+  function refreshProvider(): void {
+    provider.dispose();
+    provider = registerProvider();
+  }
 }

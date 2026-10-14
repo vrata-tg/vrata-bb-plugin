@@ -15,6 +15,10 @@ import {
 import { z } from "zod";
 import { apiBaseUrl, fetchModels, piModel, type VrataConfig, type VrataModel } from "./vrata.js";
 
+type ReasoningLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+const reasoningEfforts = ["none", "low", "medium", "high", "xhigh", "max"] as const;
+const effortDescriptions = { none: "Без рассуждений", low: "Низкий", medium: "Средний", high: "Высокий", xhigh: "Очень высокий", max: "Максимальный" };
+
 type Id = string | number;
 type Params = Record<string, unknown>;
 interface Session {
@@ -24,6 +28,7 @@ interface Session {
   agent?: Agent;
   model?: VrataModel;
   requestedModelId?: string;
+  selectedReasoningLevel?: ReasoningLevel;
   messages: AgentMessage[];
   instructions?: string;
   instructionMode?: "append" | "replace";
@@ -75,7 +80,7 @@ function save(session: Session): void {
   mkdirSync(join(dataDir!, "sessions"), { recursive: true, mode: 0o700 });
   const temp = `${file}.${process.pid}.tmp`;
   try {
-    writeFileSync(temp, JSON.stringify({ cwd: session.cwd, messages: session.agent?.state.messages ?? session.messages }), { mode: 0o600 });
+    writeFileSync(temp, JSON.stringify({ cwd: session.cwd, messages: session.agent?.state.messages ?? session.messages, selectedModelId: session.requestedModelId, selectedReasoningLevel: session.selectedReasoningLevel }), { mode: 0o600 });
     renameSync(temp, file);
   } finally {
     // A failed write leaves the last complete transcript in place.
@@ -135,24 +140,28 @@ function onAgentEvent(session: Session, event: AgentEvent): void {
     }
   }
 }
-function newSession(args: { threadId: string; providerThreadId: string; cwd: string; modelId?: string; messages?: AgentMessage[]; instructions?: string; instructionMode?: "append" | "replace" }): Session {
-  const session: Session = { threadId: args.threadId, providerThreadId: args.providerThreadId, cwd: args.cwd, requestedModelId: args.modelId, messages: args.messages ?? [], instructions: args.instructions, instructionMode: args.instructionMode, closed: false, busy: false, failed: false, messageIndex: 0, text: "", toolArgs: new Map() };
+function newSession(args: { threadId: string; providerThreadId: string; cwd: string; modelId?: string; selectedModelId?: string; selectedReasoningLevel?: ReasoningLevel; messages?: AgentMessage[]; instructions?: string; instructionMode?: "append" | "replace" }): Session {
+  const session: Session = { threadId: args.threadId, providerThreadId: args.providerThreadId, cwd: args.cwd, requestedModelId: args.selectedModelId ?? args.modelId, selectedReasoningLevel: args.selectedReasoningLevel, messages: args.messages ?? [], instructions: args.instructions, instructionMode: args.instructionMode, closed: false, busy: false, failed: false, messageIndex: 0, text: "", toolArgs: new Map() };
   sessions.set(args.threadId, session);
   notify(BRIDGE_NOTIFICATION_METHODS.threadIdentity, { threadId: args.threadId, providerThreadId: args.providerThreadId });
   delta(session, { kind: "session.reset" });
   return session;
 }
 
-async function ensureAgent(session: Session, modelId?: string): Promise<Agent> {
+async function ensureAgent(session: Session, modelId: string, reasoningLevel: ReasoningLevel): Promise<Agent> {
   const id = (modelId ?? session.requestedModelId)?.replace(/^vrata\//, "");
-  if (session.agent && (!id || id === "vrata-auto" || id === session.model?.id)) return session.agent;
+  if (session.agent && id === session.model?.id) {
+    session.agent.state.thinkingLevel = session.model.reasoning && reasoningLevel !== "none" ? reasoningLevel : "off";
+    return session.agent;
+  }
   const config = requiredConfig();
   const models = await fetchModels(config);
-  const model = (id && id !== "vrata-auto" && models.find((candidate) => candidate.id === id)) || (id === "vrata-auto" || !id ? models.find((candidate) => candidate.tools) || models[0] : undefined);
-  if (!model) throw new Error(id && id !== "vrata-auto" ? `Модель ${id} недоступна для этого ключа` : "Для этого ключа нет доступных моделей Врата AI");
+  const model = models.find((candidate) => candidate.id === id);
+  if (!model) throw new Error(`Модель ${id} недоступна для этого ключа`);
   if (session.agent) {
     session.model = model;
     session.agent.state.model = piModel(model, config);
+    session.agent.state.thinkingLevel = model.reasoning && reasoningLevel !== "none" ? reasoningLevel : "off";
     session.agent.state.tools = model.tools ? createCodingTools(session.cwd) : [];
     return session.agent;
   }
@@ -165,7 +174,7 @@ async function ensureAgent(session: Session, modelId?: string): Promise<Agent> {
     getApiKey: () => requiredConfig().apiKey,
     initialState: {
       model: piModel(model, config),
-      thinkingLevel: "medium",
+      thinkingLevel: model.reasoning && reasoningLevel !== "none" ? reasoningLevel : "off",
       systemPrompt,
       tools: model.tools ? createCodingTools(session.cwd) : [],
       messages: session.messages,
@@ -193,7 +202,25 @@ function requestKey(session: Session): Promise<void> {
     if (!result.success || !getConfig()) throw new Error("Ключ Врата AI не сохранён. Повторите настройку.");
   }).finally(() => { session.activeInteractionId = undefined; });
 }
-async function runTurn(session: Session, input: readonly { type: string; text?: string }[], clientRequestId?: string, modelId?: string): Promise<void> {
+async function requestModel(session: Session): Promise<{ modelId: string; reasoningLevel: ReasoningLevel }> {
+  const models = await fetchModels(requiredConfig());
+  if (!models.length) throw new Error("Для этого ключа нет доступных моделей Врата AI");
+  const id = `model-${randomUUID()}`;
+  session.activeInteractionId = id;
+  return new Promise<unknown>((resolve, reject) => {
+    pendingInteractions.set(id, { resolve, reject });
+    io.send({ jsonrpc: "2.0", id, method: "interaction/request", params: {
+      providerThreadId: session.providerThreadId, threadId: session.threadId, turnId: null,
+      payload: { kind: "vrata/model", title: "Выберите модель Врата AI", data: { models: models.map((model) => ({ id: model.id, name: model.name, reasoning: model.reasoning })) } },
+    } });
+  }).then((answer) => {
+    const result = z.object({ kind: z.literal("request_answer"), value: z.object({ modelId: z.string(), reasoningLevel: z.enum(reasoningEfforts) }) }).safeParse(answer);
+    if (!result.success || !models.some((model) => model.id === result.data.value.modelId)) throw new Error("Выберите доступную модель Врата AI");
+    const model = models.find((candidate) => candidate.id === result.data.value.modelId)!;
+    return { modelId: model.id, reasoningLevel: model.reasoning ? result.data.value.reasoningLevel : "none" };
+  }).finally(() => { session.activeInteractionId = undefined; });
+}
+async function runTurn(session: Session, input: readonly { type: string; text?: string }[], clientRequestId?: string, modelId?: string, reasoningLevel: ReasoningLevel = "none"): Promise<void> {
   if (session.busy) throw new Error("Pi уже выполняет запрос");
   session.busy = true;
   session.failed = false;
@@ -203,7 +230,17 @@ async function runTurn(session: Session, input: readonly { type: string; text?: 
     if (!prompt.trim()) throw new Error("Пустой запрос");
     if (!getConfig()) await requestKey(session);
     if (session.closed) return;
-    const agent = await ensureAgent(session, modelId);
+    let selectedModel = modelId === "vrata-setup" ? session.requestedModelId : modelId ?? session.requestedModelId;
+    if (modelId === "vrata-setup" && session.selectedReasoningLevel) reasoningLevel = session.selectedReasoningLevel;
+    if (!selectedModel || selectedModel === "vrata-setup") {
+      const selected = await requestModel(session);
+      selectedModel = selected.modelId;
+      reasoningLevel = selected.reasoningLevel;
+      session.requestedModelId = selectedModel;
+      session.selectedReasoningLevel = reasoningLevel;
+    }
+    if (session.closed) return;
+    const agent = await ensureAgent(session, selectedModel, reasoningLevel);
     await agent.prompt(prompt);
   } catch (error) {
     session.failed = true;
@@ -238,7 +275,7 @@ async function request(id: Id, method: string, params: unknown): Promise<void> {
       if (!parsed.success) return replyInvalid(id, method, parsed.error.issues);
       const config = getConfig();
       const models = config ? await fetchModels(config) : [];
-      io.sendResult(id, { models: [{ id: "vrata-auto", model: "vrata-auto", displayName: "Авто · Врата AI", routeProviderId: "vrata", description: "Pi выберет доступную модель; ключ запрашивается в треде", supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "Стандартный режим" }], defaultReasoningEffort: "medium", isDefault: true }, ...models.map((model) => ({ id: model.id, model: model.id, displayName: model.name, routeProviderId: "vrata", description: model.tools ? "Pi: код и инструменты" : "Pi: текст", supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "Стандартный режим" }], defaultReasoningEffort: "medium", isDefault: false }))], selectedOnlyModels: [] });
+      io.sendResult(id, { models: config ? models.map((model, index) => ({ id: model.id, model: model.id, displayName: model.name, routeProviderId: "vrata", description: model.tools ? "Pi: код и инструменты" : "Pi: текст", supportedReasoningEfforts: (model.reasoning ? reasoningEfforts : ["none"] as const).map((level) => ({ reasoningEffort: level, description: effortDescriptions[level] })), defaultReasoningEffort: model.reasoning ? "medium" : "none", isDefault: index === 0 })) : [{ id: "vrata-setup", model: "vrata-setup", displayName: "Ввести ключ и выбрать модель", routeProviderId: "vrata", description: "Настройка в треде", supportedReasoningEfforts: [{ reasoningEffort: "none", description: effortDescriptions.none }], defaultReasoningEffort: "none", isDefault: true }], selectedOnlyModels: [] });
       return;
     }
     case "provider/health": {
@@ -261,7 +298,7 @@ async function request(id: Id, method: string, params: unknown): Promise<void> {
       const providerThreadId = randomUUID();
       const session = newSession({ threadId: value.threadId, providerThreadId, cwd: value.cwd, modelId: value.options.model, instructions: value.options.instructions, instructionMode: value.instructionMode });
       io.sendResult(id, { providerThreadId, sessionRestorable: true });
-      if (value.input?.length) void runTurn(session, value.input);
+      if (value.input?.length) void runTurn(session, value.input, undefined, value.options.model, value.options.reasoningLevel as ReasoningLevel | undefined);
       return;
     }
     case "thread/resume": {
@@ -269,8 +306,8 @@ async function request(id: Id, method: string, params: unknown): Promise<void> {
       if (!parsed.success) return replyInvalid(id, method, parsed.error.issues);
       const value = parsed.data;
       const file = sessionFile(value.providerThreadId);
-      const saved = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) as { cwd?: string; messages?: AgentMessage[] } : {};
-      const session = newSession({ threadId: value.threadId, providerThreadId: value.providerThreadId, cwd: value.cwd, modelId: value.options.model, messages: Array.isArray(saved.messages) ? saved.messages : [], instructions: value.options.instructions, instructionMode: value.instructionMode });
+      const saved = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) as { cwd?: string; messages?: AgentMessage[]; selectedModelId?: string; selectedReasoningLevel?: ReasoningLevel } : {};
+      const session = newSession({ threadId: value.threadId, providerThreadId: value.providerThreadId, cwd: value.cwd, modelId: value.options.model, selectedModelId: saved.selectedModelId, selectedReasoningLevel: saved.selectedReasoningLevel, messages: Array.isArray(saved.messages) ? saved.messages : [], instructions: value.options.instructions, instructionMode: value.instructionMode });
       io.sendResult(id, { providerThreadId: session.providerThreadId, sessionRestorable: true });
       return;
     }
@@ -281,7 +318,7 @@ async function request(id: Id, method: string, params: unknown): Promise<void> {
       if (!session) throw new Error("Сессия Pi не найдена");
       if (session.busy) throw new Error("Pi уже выполняет запрос");
       io.sendResult(id, {});
-      void runTurn(session, parsed.data.input, parsed.data.clientRequestId, parsed.data.options.model);
+      void runTurn(session, parsed.data.input, parsed.data.clientRequestId, parsed.data.options.model, parsed.data.options.reasoningLevel as ReasoningLevel | undefined);
       return;
     }
     case "turn/steer": {

@@ -71,6 +71,49 @@ function KeyForm({ interaction, submit }: PluginPendingInteractionProps) {
   );
 }
 
+function ModelForm({ interaction, submit }: PluginPendingInteractionProps) {
+  const payload = interaction.payload;
+  const data = payload && typeof payload === "object" && !Array.isArray(payload) && "data" in payload ? payload.data : null;
+  const rawModels = data && typeof data === "object" && !Array.isArray(data) && "models" in data ? data.models : null;
+  const models = Array.isArray(rawModels) ? rawModels.filter((value): value is { id: string; name: string; reasoning: boolean } =>
+    value !== null && typeof value === "object" && !Array.isArray(value) && typeof value.id === "string" && typeof value.name === "string" && typeof value.reasoning === "boolean") : [];
+  const [modelId, setModelId] = useState(models[0]?.id ?? "");
+  const [reasoningLevel, setReasoningLevel] = useState("medium");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const selected = models.find((model) => model.id === modelId);
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selected || busy) return;
+    setBusy(true);
+    setError("");
+    try { await submit({ modelId, reasoningLevel: selected.reasoning ? reasoningLevel : "none" }); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось выбрать модель"); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <form onSubmit={(event) => void onSubmit(event)} style={{ display: "grid", gap: 12, maxWidth: 440, padding: 16 }}>
+      <strong>{interaction.title}</strong>
+      <label style={{ display: "grid", gap: 6 }}>Модель
+        <select value={modelId} onChange={(event) => setModelId(event.target.value)} disabled={busy} required>
+          {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+        </select>
+      </label>
+      {selected?.reasoning && <label style={{ display: "grid", gap: 6 }}>Ризонинг
+        <select value={reasoningLevel} onChange={(event) => setReasoningLevel(event.target.value)} disabled={busy}>
+          <option value="none">Выкл.</option><option value="low">Низкий</option><option value="medium">Средний</option>
+          <option value="high">Высокий</option><option value="xhigh">Очень высокий</option><option value="max">Максимальный</option>
+        </select>
+      </label>}
+      {error && <span role="alert" style={{ color: "#c43d3d" }}>{error}</span>}
+      <button type="submit" disabled={busy || !selected}>Продолжить запрос</button>
+    </form>
+  );
+}
+
 export default definePluginApp((app) => {
   app.slots.pendingInteraction({ id: "api-key", component: KeyForm });
+  app.slots.pendingInteraction({ id: "model", component: ModelForm });
 });
