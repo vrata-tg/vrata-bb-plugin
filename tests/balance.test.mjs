@@ -118,7 +118,9 @@ test("footer mounts in the lower sidebar, refreshes, follows remounts and cleans
   let row = ui.document.querySelector("[data-vrata-balance]");
   assert.equal(row.parentElement.firstElementChild, row);
   assert.equal(row.dataset.bbPlugin, "vrata");
-  assert.equal(row.textContent, "Врата AI1,30 ₽Пополнить");
+  assert.equal(row.textContent, "Врата AI1,50 ₽Пополнить");
+  assert.match(row.querySelector("button").title, /Всего \(включая резерв\): 1,50 ₽/);
+  assert.match(row.querySelector("button").title, /Доступно: 1,30 ₽/);
   assert.match(row.querySelector("button").title, /Бонусы: 0,30 ₽/);
   assert.match(row.querySelector("button").title, /В резерве: 0,20 ₽/);
   const link = row.querySelector("a");
@@ -131,7 +133,7 @@ test("footer mounts in the lower sidebar, refreshes, follows remounts and cleans
   nextResult = { ...balance, spendable: "2400000" };
   row.querySelector("button").click();
   await settle();
-  assert.match(row.textContent, /2,40 ₽/);
+  assert.match(row.textContent, /2,60 ₽/);
   ui.dom.window.dispatchEvent(new ui.dom.window.Event("focus"));
   await settle();
   [...ui.timers.values()][0].callback();
@@ -148,7 +150,7 @@ test("footer mounts in the lower sidebar, refreshes, follows remounts and cleans
   await settle();
   assert.equal(ui.document.querySelectorAll("[data-vrata-balance]").length, 2);
   row = ui.document.querySelector("[data-vrata-balance]");
-  assert.match(row.textContent, /2,40 ₽/);
+  assert.match(row.textContent, /2,60 ₽/);
 
   ui.controller.abort();
   ui.dispose();
@@ -177,7 +179,7 @@ test("missing key hides the footer; failures replace the old balance and can rec
   [...ui.timers.values()][0].callback();
   await settle();
   assert.equal(row.hidden, false);
-  assert.match(row.textContent, /1,30 ₽/);
+  assert.match(row.textContent, /1,50 ₽/);
   nextResult = { status: "error", message: "Проверьте ключ API" };
   row.querySelector("button").click();
   await settle();
@@ -190,7 +192,7 @@ test("missing key hides the footer; failures replace the old balance and can rec
   nextResult = balance;
   row.querySelector("button").click();
   await settle();
-  assert.match(row.textContent, /1,30 ₽/);
+  assert.match(row.textContent, /1,50 ₽/);
 });
 
 test("overlapping refreshes are coalesced and disposal aborts an in-flight request", async (t) => {
@@ -246,7 +248,7 @@ test("a request completed during a balance fetch queues a fresh read instead of 
   finish();
   await settle();
   assert.equal(calls, 2);
-  assert.match(ui.document.querySelector("[data-vrata-balance]").textContent, /1,20 ₽/);
+  assert.match(ui.document.querySelector("[data-vrata-balance]").textContent, /1,40 ₽/);
   assert.equal(ui.timers.size, 1);
 });
 

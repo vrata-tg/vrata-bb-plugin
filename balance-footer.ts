@@ -15,10 +15,11 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
 
   function render(row: HTMLDivElement): void {
     const button = row.querySelector("button")!;
-    const label = state?.status === "ok" ? formatRubles(state.spendable)
+    const label = state?.status === "ok" ? formatRubles((BigInt(state.spendable) + BigInt(state.reserved)).toString())
       : state?.status === "error" ? "Баланс недоступен" : "Баланс…";
     const title = state?.status === "ok"
       ? [
+        `Всего (включая резерв): ${label}`,
         `Доступно: ${formatRubles(state.spendable)}`,
         `Оплачено: ${formatRubles(state.paid)}`,
         `Бонусы: ${formatRubles(state.promo)}`,
