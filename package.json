@@ -20,7 +20,7 @@
   "scripts": {
     "build": "bb plugin build",
     "typecheck": "tsc --noEmit",
-    "test": "node tests/bridge.test.mjs"
+    "test": "tsc -p tsconfig.tests.json && node --test tests/balance.test.mjs && node tests/bridge.test.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.84.0",
@@ -32,6 +32,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/react": "^19.3.0",
+    "jsdom": "^26.1.0",
     "react": "^19.3.0",
     "typescript": "^5.7.0"
   }

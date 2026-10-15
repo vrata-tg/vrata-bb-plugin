@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { definePluginApp, useRpc, type PluginPendingInteractionProps } from "@get-bb/plugin-sdk/app";
 import type { setupContract } from "./contract.js";
+import { mountBalanceFooter } from "./balance-footer.js";
 
 function KeyForm({ interaction, submit }: PluginPendingInteractionProps) {
   const rpc = useRpc<typeof setupContract>();
@@ -114,6 +115,7 @@ function ModelForm({ interaction, submit }: PluginPendingInteractionProps) {
 }
 
 export default definePluginApp((app) => {
+  app.contentScripts.register({ id: "account-balance", mount: mountBalanceFooter });
   app.slots.pendingInteraction({ id: "api-key", component: KeyForm });
   app.slots.pendingInteraction({ id: "model", component: ModelForm });
 });
