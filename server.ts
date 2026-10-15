@@ -1,6 +1,8 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { credentialsContract, DEFAULT_BASE_URL, setupContract } from "./contract.js";
-import { fetchModels } from "./vrata.js";
+import { accountContract, credentialsContract, DEFAULT_BASE_URL, setupContract } from "./contract.js";
+import { apiBaseUrl, fetchModels } from "./vrata.js";
+import { fetchBalance } from "./balance.js";
+import { registerBalanceEvents } from "./balance-events.js";
 
 const setupModel = {
   id: "vrata-setup",
@@ -60,6 +62,17 @@ export default function plugin(bb: BbPluginApi): void {
     },
   });
   bb.onDispose(() => { disposed = true; });
+
+  const balanceController = new AbortController();
+  registerBalanceEvents(bb);
+  bb.onDispose(() => balanceController.abort());
+  bb.rpc.register(accountContract, {
+    async balance() {
+      const { apiKey, baseUrl } = await settings.get();
+      if (!apiKey?.trim()) return { status: "unconfigured" as const };
+      return fetchBalance(apiBaseUrl(baseUrl), apiKey, balanceController.signal);
+    },
+  });
 
   bb.rpc.register(setupContract, {
     async validateKey({ apiKey }) {
