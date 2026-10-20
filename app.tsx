@@ -24,15 +24,14 @@ function KeyForm({ interaction, submit }: PluginPendingInteractionProps) {
           credentials: "same-origin",
           body: JSON.stringify({ values: { apiKey: apiKey.trim() } }),
         });
-        const result: unknown = await response.json();
+        const result: unknown = await response.json().catch(() => null);
         if (!response.ok || !result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true) {
-          const message = result && typeof result === "object" && typeof (result as { error?: unknown }).error === "string" ? (result as { error: string }).error : "Не удалось сохранить ключ Врата AI";
-          throw new Error(message);
+          throw new Error("Не удалось сохранить ключ Врата AI");
         }
         setSaved(true);
         setApiKey("");
       }
-      await rpc.call("waitForKey", null);
+      await rpc.call("waitForKey", { threadId: interaction.threadId });
       await submit({ configured: true });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Не удалось сохранить ключ. Повторите попытку.");
@@ -72,24 +71,33 @@ function KeyForm({ interaction, submit }: PluginPendingInteractionProps) {
   );
 }
 
+const reasoningLabels: Record<string, string> = {
+  none: "Выкл.", low: "Низкий", medium: "Средний",
+  high: "Высокий", xhigh: "Очень высокий", max: "Максимальный",
+};
+
 function ModelForm({ interaction, submit }: PluginPendingInteractionProps) {
   const payload = interaction.payload;
   const data = payload && typeof payload === "object" && !Array.isArray(payload) && "data" in payload ? payload.data : null;
   const rawModels = data && typeof data === "object" && !Array.isArray(data) && "models" in data ? data.models : null;
-  const models = Array.isArray(rawModels) ? rawModels.filter((value): value is { id: string; name: string; reasoning: boolean } =>
-    value !== null && typeof value === "object" && !Array.isArray(value) && typeof value.id === "string" && typeof value.name === "string" && typeof value.reasoning === "boolean") : [];
+  const models = Array.isArray(rawModels) ? rawModels.filter((value): value is { id: string; name: string; reasoningLevels: string[] } =>
+    value !== null && typeof value === "object" && !Array.isArray(value) && typeof value.id === "string" && typeof value.name === "string"
+    && Array.isArray(value.reasoningLevels) && value.reasoningLevels.length > 0
+    && value.reasoningLevels.every((level) => typeof level === "string" && Object.hasOwn(reasoningLabels, level))) : [];
   const [modelId, setModelId] = useState(models[0]?.id ?? "");
   const [reasoningLevel, setReasoningLevel] = useState("medium");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const selected = models.find((model) => model.id === modelId);
+  const selectedReasoning = selected?.reasoningLevels.includes(reasoningLevel) ? reasoningLevel
+    : selected?.reasoningLevels.includes("medium") ? "medium" : selected?.reasoningLevels[0];
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!selected || busy) return;
+    if (!selected || !selectedReasoning || busy) return;
     setBusy(true);
     setError("");
-    try { await submit({ modelId, reasoningLevel: selected.reasoning ? reasoningLevel : "none" }); }
+    try { await submit({ modelId, reasoningLevel: selectedReasoning }); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось выбрать модель"); }
     finally { setBusy(false); }
   }
@@ -102,10 +110,9 @@ function ModelForm({ interaction, submit }: PluginPendingInteractionProps) {
           {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
         </select>
       </label>
-      {selected?.reasoning && <label style={{ display: "grid", gap: 6 }}>Ризонинг
-        <select value={reasoningLevel} onChange={(event) => setReasoningLevel(event.target.value)} disabled={busy}>
-          <option value="none">Выкл.</option><option value="low">Низкий</option><option value="medium">Средний</option>
-          <option value="high">Высокий</option><option value="xhigh">Очень высокий</option><option value="max">Максимальный</option>
+      {selected && selected.reasoningLevels.some((level) => level !== "none") && <label style={{ display: "grid", gap: 6 }}>Ризонинг
+        <select value={selectedReasoning} onChange={(event) => setReasoningLevel(event.target.value)} disabled={busy}>
+          {selected.reasoningLevels.map((level) => <option key={level} value={level}>{reasoningLabels[level]}</option>)}
         </select>
       </label>}
       {error && <span role="alert" style={{ color: "#c43d3d" }}>{error}</span>}

@@ -19,7 +19,7 @@ export const setupContract = defineRpcContract({
     output: z.object({ valid: z.literal(true) }).strict(),
   },
   waitForKey: {
-    input: z.null(),
+    input: z.object({ threadId: z.string().min(1) }).strict(),
     output: z.object({ configured: z.literal(true) }).strict(),
   },
 });

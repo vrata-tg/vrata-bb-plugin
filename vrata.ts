@@ -1,4 +1,4 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 
 export interface VrataConfig { apiKey: string; baseUrl: string }
@@ -14,10 +14,11 @@ export interface VrataModel {
   transport: "chat_completions" | "responses" | "messages";
 }
 
-const builtinReasoning = new Map(
-  ["openai", "anthropic", "google", "xai", "deepseek", "mistral", "zai"].flatMap((provider) =>
-    getBuiltinModels(provider as Parameters<typeof getBuiltinModels>[0]).map((model) => [model.id, model.reasoning] as const)),
-);
+export type VrataReasoningLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+
+const builtinModels: Model<Api>[] =
+  (["openai", "anthropic", "google", "xai", "deepseek", "mistral", "zai"] as const)
+    .flatMap((provider) => getBuiltinModels(provider));
 
 export function apiBaseUrl(value: string): string {
   const url = new URL(value);
@@ -47,29 +48,32 @@ export function parseModels(input: unknown, protocol: VrataModel["protocol"] = "
       maxTokens: positive(meta.max_output_tokens, 4_096),
       images: meta.supports_images === true,
       tools: meta.supports_tools === true,
-      reasoning: typeof meta.supports_reasoning === "boolean" ? meta.supports_reasoning : builtinReasoning.get(candidate.id) === true,
+      reasoning: typeof meta.supports_reasoning === "boolean" ? meta.supports_reasoning : builtinModels.some((model) => model.id === candidate.id && model.reasoning),
       transport: meta.verified_transport === "chat_completions" ? "chat_completions"
         : meta.verified_transport === "messages" ? "messages"
+        : meta.verified_transport === "responses" ? "responses"
         : protocol === "anthropic" ? "messages" : "responses",
     });
   }
   return result;
 }
 
-export async function fetchModels(config: VrataConfig): Promise<VrataModel[]> {
+export async function fetchModels(config: VrataConfig, signal?: AbortSignal): Promise<VrataModel[]> {
+  const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000);
   async function load(protocol: VrataModel["protocol"]): Promise<VrataModel[]> {
     const response = await fetch(`${apiBaseUrl(config.baseUrl)}/models`, {
       headers: {
         Authorization: `Bearer ${config.apiKey}`,
         ...(protocol === "anthropic" ? { "Anthropic-Version": "2023-06-01" } : {}),
       },
-      signal: AbortSignal.timeout(15_000),
+      signal: requestSignal,
     });
     if (response.status === 401 || response.status === 403) throw new Error("Ключ Врата AI недействителен или не имеет доступа к моделям");
     if (!response.ok) throw new Error(`Каталог Врата AI вернул HTTP ${response.status}`);
     return parseModels(await response.json(), protocol);
   }
   const [openai, anthropic] = await Promise.allSettled([load("openai"), load("anthropic")]);
+  signal?.throwIfAborted();
   if (openai.status === "rejected" && anthropic.status === "rejected") throw openai.reason;
   const models = new Map<string, VrataModel>();
   for (const model of openai.status === "fulfilled" ? openai.value : []) models.set(model.id, model);
@@ -80,16 +84,27 @@ export async function fetchModels(config: VrataConfig): Promise<VrataModel[]> {
 }
 
 export function piModel(model: VrataModel, config: VrataConfig): Model<Api> {
+  const api = model.transport === "messages" ? "anthropic-messages"
+    : model.transport === "chat_completions" ? "openai-completions" : "openai-responses";
+  const builtin = builtinModels.find((candidate) => candidate.id === model.id && candidate.api === api);
   return {
     id: model.id,
     name: model.name,
-    api: model.protocol === "anthropic" ? "anthropic-messages" : model.transport === "chat_completions" ? "openai-completions" : "openai-responses",
+    api,
     provider: "vrata",
-    baseUrl: model.protocol === "anthropic" ? new URL(config.baseUrl).origin : apiBaseUrl(config.baseUrl),
+    baseUrl: api === "anthropic-messages" ? new URL(apiBaseUrl(config.baseUrl)).origin : apiBaseUrl(config.baseUrl),
     reasoning: model.reasoning,
+    thinkingLevelMap: builtin?.thinkingLevelMap,
+    compat: builtin?.compat,
     input: model.images ? ["text", "image"] : ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: model.contextWindow,
     maxTokens: model.maxTokens,
   };
+}
+
+export function supportedReasoningLevels(model: Model<Api>): VrataReasoningLevel[] {
+  return getSupportedThinkingLevels(model)
+    .filter((level) => level !== "minimal")
+    .map((level) => level === "off" ? "none" : level);
 }

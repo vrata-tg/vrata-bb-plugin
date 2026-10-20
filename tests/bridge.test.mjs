@@ -131,7 +131,7 @@ async function smoke() {
   await awaitBoundary("thr_vrata_first_resumed");
   const catalog = await request("model/list", {});
   assert.deepEqual(catalog.models.map((model) => model.id), ["mock-code", "mock-text"]);
-  assert.deepEqual(catalog.models[0].supportedReasoningEfforts.map((entry) => entry.reasoningEffort), ["none", "low", "medium", "high", "xhigh", "max"]);
+  assert.deepEqual(catalog.models[0].supportedReasoningEfforts.map((entry) => entry.reasoningEffort), ["none", "low", "medium", "high"]);
   assert.deepEqual(catalog.models[1].supportedReasoningEfforts.map((entry) => entry.reasoningEffort), ["none"]);
   const textThread = await request("thread/start", { threadId: "thr_vrata_text", cwd: root, instructionMode: "append", options: { ...options, model: "mock-text", reasoningLevel: "none" }, input: input("Без рассуждений") });
   await awaitBoundary("thr_vrata_text");

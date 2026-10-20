@@ -2,6 +2,9 @@
   "name": "bb-plugin-vrata",
   "version": "0.1.0",
   "type": "module",
+  "imports": {
+    "#vrata-image-runtime": "./packaging/image-resize-core.js"
+  },
   "description": "Врата AI provider for bb with an embedded Pi agent runtime",
   "engines": {
     "bb": ">=0.41",
@@ -20,7 +23,7 @@
   "scripts": {
     "build": "bb plugin build",
     "typecheck": "tsc --noEmit",
-    "test": "tsc -p tsconfig.tests.json && node --test tests/balance.test.mjs && node tests/bridge.test.mjs"
+    "test": "tsc -p tsconfig.tests.json && node --test --test-concurrency=1 tests/*.test.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.84.0",

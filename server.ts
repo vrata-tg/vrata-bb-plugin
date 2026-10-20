@@ -23,35 +23,58 @@ export default function plugin(bb: BbPluginApi): void {
   const host = bb.hosts.experimental_client({ contract: credentialsContract });
   let disposed = false;
   let requested = false;
-  let syncTask: Promise<boolean> | undefined;
+  let settingsRevision = 0;
+  let syncTask: Promise<void> | undefined;
+  const hostSyncs = new Map<string, Promise<boolean>>();
 
-  function sync(): Promise<boolean> {
+  function syncHost(hostId: string): Promise<boolean> {
+    // Read settings inside the host's queue so an older background write cannot
+    // overtake onboarding. Recheck after acknowledgement before declaring success.
+    const task = (hostSyncs.get(hostId) ?? Promise.resolve(false)).catch(() => false).then(async () => {
+      while (!disposed) {
+        const values = await settings.get();
+        const result = await host.call("sync", {
+          apiKey: values.apiKey ?? "",
+          baseUrl: values.baseUrl,
+        }, { hostId });
+        const current = await settings.get();
+        if (values.apiKey === current.apiKey && values.baseUrl === current.baseUrl) {
+          return !disposed && Boolean(values.apiKey?.trim()) && result.configured === true;
+        }
+      }
+      return false;
+    });
+    hostSyncs.set(hostId, task);
+    void task.finally(() => {
+      if (hostSyncs.get(hostId) === task) hostSyncs.delete(hostId);
+    }).catch(() => {});
+    return task;
+  }
+
+  function sync(): Promise<void> {
     requested = true;
     if (syncTask) return syncTask;
     syncTask = (async () => {
-      let succeeded = false;
-      while (requested && !disposed) {
-        requested = false;
-        const values = await settings.get();
-        const hosts = await bb.sdk.hosts.list();
-        const results = await Promise.allSettled(hosts.map((machine) => host.call("sync", {
-          apiKey: values.apiKey ?? "",
-          baseUrl: values.baseUrl,
-        }, { hostId: machine.id })));
-        succeeded = results.some((result) => result.status === "fulfilled");
-        for (const result of results) {
-          if (result.status === "rejected") bb.log.warn(`Could not synchronize a Врата AI machine: ${String(result.reason)}`);
+      try {
+        while (requested && !disposed) {
+          requested = false;
+          const hosts = await bb.sdk.hosts.list();
+          const results = await Promise.allSettled(hosts.map((machine) => syncHost(machine.id)));
+          for (const result of results) {
+            if (result.status === "rejected") bb.log.warn("Could not synchronize a Врата AI machine");
+          }
         }
+      } finally {
+        syncTask = undefined;
       }
-      return succeeded;
-    })().finally(() => { syncTask = undefined; });
+    })();
     return syncTask;
   }
 
   function backgroundSync(): void {
-    void sync().catch((error) => bb.log.warn(`Could not synchronize Врата AI configuration: ${String(error)}`));
+    void sync().catch(() => bb.log.warn("Could not synchronize Врата AI configuration"));
   }
-  settings.onChange(() => { backgroundSync(); refreshProvider(); });
+  settings.onChange(() => { settingsRevision += 1; backgroundSync(); refreshProvider(); });
   bb.background.service("credentials", {
     start(signal) {
       backgroundSync();
@@ -76,16 +99,32 @@ export default function plugin(bb: BbPluginApi): void {
 
   bb.rpc.register(setupContract, {
     async validateKey({ apiKey }) {
-      const { baseUrl } = await settings.get();
-      const models = await fetchModels({ apiKey, baseUrl });
-      if (models.length === 0) throw new Error("Для этого ключа нет доступных моделей Врата AI");
-      return { valid: true as const };
+      try {
+        const { baseUrl } = await settings.get();
+        const models = await fetchModels({ apiKey, baseUrl });
+        if (models.length > 0) return { valid: true as const };
+      } catch {
+        throw new Error("Не удалось проверить ключ Врата AI. Проверьте ключ и адрес API.");
+      }
+      throw new Error("Для этого ключа нет доступных моделей Врата AI");
     },
-    async waitForKey() {
-      const { apiKey } = await settings.get();
-      if (!apiKey) throw new Error("Ключ Врата AI не сохранён");
-      if (!await sync()) throw new Error("Не удалось передать ключ на машину с тредом. Повторите попытку.");
-      return { configured: true as const };
+    async waitForKey({ threadId }) {
+      try {
+        const thread = await bb.sdk.threads.get({ threadId });
+        if (thread.environmentId) {
+          const environment = await bb.sdk.environments.get({ environmentId: thread.environmentId });
+          while (!disposed) {
+            const revision = settingsRevision;
+            const configured = await syncHost(environment.hostId);
+            if (revision !== settingsRevision) continue;
+            if (configured) return { configured: true as const };
+            break;
+          }
+        }
+      } catch {
+        // Host/SDK errors can contain credentials or request details.
+      }
+      throw new Error("Не удалось передать актуальный ключ на машину с тредом. Повторите попытку.");
     },
   });
 
