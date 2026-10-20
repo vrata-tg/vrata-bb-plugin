@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vrata bb plugin Development"
+  short_description: "Develop and verify the Vrata bb plugin"
+  default_prompt: "Use $vrata-bb-plugin-dev to implement and verify this plugin change."
