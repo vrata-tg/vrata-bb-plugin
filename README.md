@@ -20,6 +20,10 @@ bb plugin install git:https://github.com/v-lebedev/vrata-bb-plugin
 
 ## Разработка
 
+Правила разработки: [AGENTS.md](AGENTS.md). Полный процесс планирования,
+реализации, ревью и доставки через PR:
+[vrata-bb-plugin-dev](.agents/skills/vrata-bb-plugin-dev/SKILL.md).
+
 ```bash
 npm ci
 npm run typecheck
