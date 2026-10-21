@@ -11,6 +11,7 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
   const controller = new AbortController();
   let hosts: PluginRpcResult<typeof configurationContract.listHosts> = [];
   let hostsError = false;
+  let discovering = true;
   let hostId = "";
   let requestEpoch = 0;
   let balanceController = new AbortController();
@@ -33,9 +34,14 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
     const placeholder = hostsError ? "Список машин недоступен" : "Выберите машину";
     if (selector.options[0]!.textContent !== placeholder) selector.options[0]!.textContent = placeholder;
     selector.value = hostId;
+    selector.hidden = hosts.length <= 1;
     const button = row.querySelector("button")!;
+    const hasConnectedHost = hosts.some((host) => host.status === "connected");
+    const pendingLabel = hostId || discovering ? "Баланс…" : hasConnectedHost ? "Выберите машину" : "Нет подключённых машин";
+    const pendingTitle = hostId || discovering ? "Получаем баланс Врата AI"
+      : hasConnectedHost ? "Выберите машину для просмотра баланса" : "Подключите машину с настроенным ключом Врата AI";
     const label = state?.status === "ok" ? formatRubles((BigInt(state.spendable) + BigInt(state.reserved)).toString())
-      : state?.status === "error" ? "Баланс недоступен" : state?.status === "unconfigured" ? "Ключ не настроен" : hostId ? "Баланс…" : "Выберите машину";
+      : state?.status === "error" || hostsError ? "Баланс недоступен" : state?.status === "unconfigured" ? "Ключ не настроен" : pendingLabel;
     const title = state?.status === "ok"
       ? [
         `Всего (включая резерв): ${label}`,
@@ -48,7 +54,8 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
       ].join("\n")
       : state?.status === "error" ? `${state.message}\nНажмите, чтобы обновить`
       : state?.status === "unconfigured" ? "Настройте ключ для этой машины в настройках Врата AI"
-      : hostId ? "Получаем баланс Врата AI" : "Выберите машину для просмотра баланса";
+      : hostsError ? "Не удалось получить список машин BB"
+      : pendingTitle;
     // Avoid needless DOM mutations: the observer also sees changes inside our rows.
     if (button.lastElementChild?.textContent !== label) button.lastElementChild!.textContent = label;
     button.title = title;
@@ -137,7 +144,7 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
     }
   }
 
-  async function rpc(method: "balance" | "listHosts", input: unknown, requestSignal: AbortSignal): Promise<unknown> {
+  async function rpc(method: "balance" | "listHosts" | "getConfiguration", input: unknown, requestSignal: AbortSignal): Promise<unknown> {
     const response = await fetch(`/api/v1/plugins/${encodeURIComponent(pluginId)}/rpc/${method}`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-bb-app-surface": "web" },
@@ -151,7 +158,12 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
   }
 
   function onHostChange(event: Event): void {
-    hostId = (event.currentTarget as HTMLSelectElement).value;
+    selectHost((event.currentTarget as HTMLSelectElement).value);
+  }
+
+  function selectHost(value: string): void {
+    hostId = value;
+    discovering = false;
     requestEpoch++;
     balanceController.abort();
     balanceController = new AbortController();
@@ -173,13 +185,29 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
   window.addEventListener("focus", onRefresh);
   window.addEventListener("online", onRefresh);
   document.addEventListener("visibilitychange", onRefresh);
-  void rpc("listHosts", null, controller.signal).then((result) => {
+  void rpc("listHosts", null, controller.signal).then(async (result) => {
     if (disposed) return;
     hosts = configurationContract.listHosts.output.parse(result);
     rows.forEach(render);
+    const epoch = requestEpoch;
+    const connected = hosts.filter((host) => host.status === "connected");
+    let selected = connected[0]?.id ?? "";
+    for (const host of connected) {
+      try {
+        const configuration = configurationContract.getConfiguration.output.parse(
+          await rpc("getConfiguration", { target: { kind: "host", hostId: host.id } }, balanceController.signal),
+        );
+        if (disposed || epoch !== requestEpoch) return;
+        if (configuration.configured) { selected = host.id; break; }
+      } catch {
+        if (disposed || epoch !== requestEpoch) return;
+      }
+    }
+    selectHost(selected);
   }).catch(() => {
     if (disposed) return;
     hostsError = true;
+    discovering = false;
     rows.forEach(render);
   });
 

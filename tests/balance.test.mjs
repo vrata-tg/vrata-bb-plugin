@@ -61,7 +61,10 @@ async function settle() {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
-function client(t, fetcher) {
+function client(t, fetcher, { hosts = [
+  { id: "host-a", name: "Machine A", status: "connected" },
+  { id: "host-b", name: "Machine B", status: "connected" },
+], getConfiguration = () => ({ configured: true, baseUrl: "https://api.vrata.tg" }) } = {}) {
   const dom = new JSDOM('<body><aside><div data-sidebar="footer"><a>Settings</a></div></aside></body>', { pretendToBeVisual: true });
   const originals = new Map();
   const timers = new Map();
@@ -85,10 +88,13 @@ function client(t, fetcher) {
     fetch: (url, options) => {
       if (url.endsWith("/listHosts")) {
         assert.equal(options.body, "null");
-        return Promise.resolve(rpcResponse([
-          { id: "host-a", name: "Machine A", status: "connected" },
-          { id: "host-b", name: "Machine B", status: "connected" },
-        ]));
+        return Promise.resolve(rpcResponse(hosts));
+      }
+      if (url.endsWith("/getConfiguration")) {
+        const { target } = JSON.parse(options.body);
+        assert.equal(target.kind, "host");
+        return Promise.resolve(getConfiguration(target.hostId, options.signal)).then((configuration) =>
+          rpcResponse({ hostId: target.hostId, hostName: hosts.find((host) => host.id === target.hostId).name, ...configuration }));
       }
       return fetcher(url, options);
     },
@@ -118,6 +124,92 @@ function client(t, fetcher) {
 
 const rpcResponse = (result) => new Response(JSON.stringify({ ok: true, result }), { headers: { "content-type": "application/json" } });
 
+test("footer automatically finds a connected machine with a key", async (t) => {
+  for (const first of ["disconnected", "unconfigured", "unavailable", "configured"]) {
+    await t.test(first, async (t) => {
+      const configurations = [];
+      const balances = [];
+      const ui = client(t, async (_url, options) => {
+        balances.push(JSON.parse(options.body).hostId);
+        return rpcResponse(balance);
+      }, {
+        hosts: [
+          { id: "host-a", name: "Machine A", status: first === "disconnected" ? "disconnected" : "connected" },
+          { id: "host-b", name: "Machine B", status: "connected" },
+        ],
+        getConfiguration(hostId) {
+          configurations.push(hostId);
+          if (hostId === "host-a" && first === "unavailable") throw new Error("Host disconnected during discovery");
+          return { configured: hostId === "host-b" || first === "configured", baseUrl: "https://api.vrata.tg" };
+        },
+      });
+      await settle();
+      const expected = first === "configured" ? "host-a" : "host-b";
+      assert.deepEqual(balances, [expected]);
+      assert.deepEqual(configurations, first === "disconnected" ? ["host-b"] : first === "configured" ? ["host-a"] : ["host-a", "host-b"]);
+      const row = ui.document.querySelector("[data-vrata-balance]");
+      assert.equal(row.querySelector("select").value, expected);
+      assert.equal(row.querySelector("select").hidden, false);
+      assert.match(row.querySelector("button").textContent, /1,50 ₽/);
+    });
+  }
+});
+
+test("a single machine loads its balance without a picker", async (t) => {
+  const ui = client(t, async (_url, options) => {
+    assert.deepEqual(JSON.parse(options.body), { hostId: "host-a" });
+    return rpcResponse(balance);
+  }, { hosts: [{ id: "host-a", name: "Machine A", status: "connected" }] });
+  await settle();
+  const row = ui.document.querySelector("[data-vrata-balance]");
+  assert.equal(row.querySelector("select").hidden, true);
+  assert.match(row.querySelector("button").textContent, /1,50 ₽/);
+  assert.match(row.querySelector("button").getAttribute("aria-label"), /Machine A/);
+});
+
+test("no configured key or connected machines produces an actionable status", async (t) => {
+  for (const connected of [true, false]) {
+    await t.test(connected ? "key missing" : "machine offline", async (t) => {
+      let calls = 0;
+      const ui = client(t, async () => { calls++; return rpcResponse({ status: "unconfigured" }); }, {
+        hosts: [{ id: "host-a", name: "Machine A", status: connected ? "connected" : "disconnected" }],
+        getConfiguration: () => ({ configured: false, baseUrl: "https://api.vrata.tg" }),
+      });
+      await settle();
+      assert.equal(calls, connected ? 1 : 0);
+      const button = ui.document.querySelector("[data-vrata-balance] button");
+      assert.match(button.textContent, connected ? /Ключ не настроен/ : /Нет подключённых машин/);
+      assert.equal(button.disabled, !connected);
+    });
+  }
+});
+
+test("manual selection and disposal cancel discovery and reject its late result", async (t) => {
+  for (const action of ["select", "dispose"]) {
+    await t.test(action, async (t) => {
+      let finish;
+      let discoverySignal;
+      const pending = new Promise((resolve) => { finish = resolve; });
+      const calls = [];
+      const ui = client(t, async (_url, options) => {
+        calls.push(JSON.parse(options.body).hostId);
+        return rpcResponse(balance);
+      }, { getConfiguration(_hostId, signal) { discoverySignal = signal; return pending; } });
+      await settle();
+      assert.deepEqual(calls, []);
+      if (action === "select") ui.select("host-b");
+      else ui.dispose();
+      assert.equal(discoverySignal.aborted, true);
+      finish({ configured: true, baseUrl: "https://api.vrata.tg" });
+      await settle();
+      assert.deepEqual(calls, action === "select" ? ["host-b"] : []);
+      const row = ui.document.querySelector("[data-vrata-balance]");
+      if (action === "select") assert.equal(row.querySelector("select").value, "host-b");
+      else assert.equal(row, null);
+    });
+  }
+});
+
 test("footer mounts in the lower sidebar, refreshes, follows remounts and cleans up", async (t) => {
   let calls = 0;
   let nextResult = balance;
@@ -129,14 +221,7 @@ test("footer mounts in the lower sidebar, refreshes, follows remounts and cleans
     return rpcResponse(nextResult);
   });
   await settle();
-  assert.equal(calls, 0);
-  ui.sources[0].refresh();
-  ui.dom.window.dispatchEvent(new ui.dom.window.Event("focus"));
-  await settle();
-  assert.equal(calls, 0);
-  assert.equal(ui.timers.size, 0);
-  ui.select("host-a");
-  await settle();
+  assert.equal(calls, 1);
   let row = ui.document.querySelector("[data-vrata-balance]");
   assert.equal(row.parentElement.firstElementChild, row);
   assert.equal(row.dataset.bbPlugin, "vrata");
@@ -196,8 +281,6 @@ test("missing key keeps the machine picker visible; failures replace the old bal
   let nextResult = { status: "unconfigured" };
   const ui = client(t, async () => rpcResponse(nextResult));
   await settle();
-  ui.select("host-a");
-  await settle();
   const row = ui.document.querySelector("[data-vrata-balance]");
   assert.equal(row.hidden, false);
   assert.match(row.querySelector("button").textContent, /Ключ не настроен/);
@@ -234,7 +317,6 @@ test("overlapping refreshes are coalesced and disposal aborts an in-flight reque
     return rpcResponse(balance);
   });
   await settle();
-  ui.select("host-a");
   ui.dom.window.dispatchEvent(new ui.dom.window.Event("focus"));
   ui.sources[0].refresh();
   assert.equal(calls, 1);
@@ -248,8 +330,6 @@ test("overlapping refreshes are coalesced and disposal aborts an in-flight reque
 test("a completed request refreshes immediately and restarts the 30-second fallback", async (t) => {
   let calls = 0;
   const ui = client(t, async () => { calls++; return rpcResponse(balance); });
-  await settle();
-  ui.select("host-a");
   await settle();
   const oldTimer = [...ui.timers.keys()][0];
   ui.sources[0].refresh();
@@ -274,7 +354,6 @@ test("a request completed during a balance fetch queues a fresh read instead of 
     return rpcResponse({ ...balance, spendable: "1200000" });
   });
   await settle();
-  ui.select("host-a");
   ui.sources[0].refresh();
   ui.sources[0].refresh();
   assert.equal(calls, 1);
@@ -333,7 +412,6 @@ test("switching footer hosts aborts the old fetch and ignores its late balance a
     requests.push({ hostId: JSON.parse(options.body).hostId, signal: options.signal, resolve, reject });
   }));
   await settle();
-  ui.select("host-a");
   assert.equal(requests[0].hostId, "host-a");
   ui.sources[0].refresh(); // pending refresh for A must not transfer to B.
   ui.select("host-b");
