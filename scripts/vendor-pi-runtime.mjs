@@ -8,19 +8,9 @@ import { brotliCompressSync, constants } from 'node:zlib';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const output = join(root, 'packaging/pi');
-const provenance = JSON.parse(await readFile(join(output, 'provenance.json'), 'utf8'));
 const lock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8'));
 const piPackage = 'node_modules/@earendil-works/pi-coding-agent';
-const sourcePaths = new Map();
-for (const source of provenance.sources) {
-  const nested = `${piPackage}/node_modules/${source.name}`;
-  const path = lock.packages[nested] ? nested : `node_modules/${source.name}`;
-  const pinned = lock.packages[path];
-  for (const key of ['version', 'resolved', 'integrity']) {
-    if (pinned?.[key] !== source[key]) throw new Error(`Pinned Pi source changed: ${source.name} ${key}`);
-  }
-  sourcePaths.set(source.name, path);
-}
+const version = lock.packages[piPackage].version;
 
 // Reinstall from the lock in isolation; never read a global or mutated installation.
 const staging = await mkdtemp(join(tmpdir(), 'vrata-vendor-pi-'));
@@ -53,14 +43,13 @@ try {
     await addTree(join(pi, directory), directory);
   }
   for (const file of ['package.json', 'README.md', 'CHANGELOG.md']) await addFile(join(pi, file), file);
-  for (const source of provenance.sources) {
-    if (source.name !== '@earendil-works/pi-coding-agent') {
-      await addTree(join(staging, sourcePaths.get(source.name)), `node_modules/${source.name}`);
-    }
+  for (const name of ['@silvia-odwyer/photon-node', 'jiti', 'quickjs-wasi', 'typebox', 'undici']) {
+    const nested = `${piPackage}/node_modules/${name}`;
+    const path = lock.packages[nested] ? nested : `node_modules/${name}`;
+    await addTree(join(staging, path), `node_modules/${name}`);
   }
-  for (const [source, target] of [['LICENSE', 'LICENSE'], ['NOTICE.md', 'NOTICE.md'],
-    ['license-sources.json', 'LICENSE-SOURCES.json'], ['provenance.json', 'PROVENANCE.json']]) {
-    await addFile(join(output, source), target);
+  for (const file of ['LICENSE', 'NOTICE.md']) {
+    await addFile(join(output, file), file);
   }
   const sorted = [...files].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
   const digest = createHash('sha256');
@@ -78,8 +67,8 @@ try {
     params: { [constants.BROTLI_PARAM_QUALITY]: 9 },
   });
   await writeFile(join(output, 'runtime.json.br'), archive);
-  await writeFile(join(output, 'runtime-meta.json'), JSON.stringify({ version: provenance.version, sha256 }) + '\n');
-  console.log(JSON.stringify({ version: provenance.version, files: files.size, sourceBytes,
+  await writeFile(join(output, 'runtime-meta.json'), JSON.stringify({ version, sha256 }) + '\n');
+  console.log(JSON.stringify({ version, files: files.size, sourceBytes,
     archiveBytes: archive.byteLength, sha256 }, null, 2));
 } finally {
   await rm(staging, { recursive: true, force: true });

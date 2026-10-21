@@ -54,8 +54,6 @@
     "pi/LICENSE",
     "pi/NOTICE.md",
     "packaging/pi/LICENSE",
-    "packaging/pi/NOTICE.md",
-    "packaging/pi/license-sources.json",
-    "packaging/pi/provenance.json"
+    "packaging/pi/NOTICE.md"
   ]
 }

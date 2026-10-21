@@ -11,5 +11,5 @@ commands, and the public Pi SessionManager for checkpoint forks. Model metadata
 comes from the shared Vrata guide configuration. Onboarding, credential
 redaction, cancellation and BB dynamic-tool calls are integrated here.
 
-The unmodified Pi runtime and its dependency notices are sourced separately
-from pinned npm dependencies; see `packaging/pi/`.
+The unmodified Pi runtime is sourced separately from pinned npm dependencies;
+see [the Pi runtime notice](../packaging/pi/NOTICE.md).

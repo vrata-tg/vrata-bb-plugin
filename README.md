@@ -95,8 +95,8 @@ archive не публикуются. Перед выпуском выполня�
 `npm test` после build собирает общий runtime asset для тестов: import attribute
 `type: "bytes"` обрабатывается esbuild, а не самим Node.js. Packaging-тест
 устанавливает tarball без scripts/dev dependencies в чистый каталог, проверяет
-server fallback и запускает фактический host вне checkout. Полные тексты лицензий
-находятся в [packaging/pi/NOTICE.md](packaging/pi/NOTICE.md); одинаковые тексты
-хранятся один раз со ссылками из каждого package section. Интеграция с BB
+server fallback и запускает фактический host вне checkout. Уведомление о Pi
+находится в [packaging/pi/NOTICE.md](packaging/pi/NOTICE.md), его лицензия —
+в [packaging/pi/LICENSE](packaging/pi/LICENSE). Интеграция с BB
 находится в `bridge.ts` и `pi/`: один Pi-процесс на сессию, прямые RPC-команды и
 перевод событий. Происхождение кода и лицензия — в [pi/NOTICE.md](pi/NOTICE.md).
