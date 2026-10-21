@@ -64,4 +64,6 @@ npm test
 
 Тесты используют синтетические ключи, loopback HTTP, публичный SDK harness и настоящий закреплённый Pi. Они проверяют onboarding целевого host, native bridge, историю и миграцию, отмену, tools, transport и retries. Отдельная проверка копирует только собранный `host.js` вне checkout и запускает встроенный runtime. Реальный ключ не нужен.
 
-Состав и воспроизводимая генерация runtime описаны в [packaging/pi/NOTICE.md](packaging/pi/NOTICE.md) и [scripts/vendor-pi-runtime.mjs](scripts/vendor-pi-runtime.mjs). Provenance и изменения заимствованного bridge — в [native-pi/NOTICE.md](native-pi/NOTICE.md).
+Pi закреплён в npm dependencies. В Git хранится список byte imports, а штатная сборка bb включает файлы установленных пакетов в `host.js`. Архива runtime в исходниках нет. После изменения pinned зависимостей список и checksum обновляются командой `node scripts/vendor-pi-runtime.mjs`: генератор выполняет отдельный `npm ci` по lockfile и не меняет рабочие dependencies. Managed Git install не требует build hooks.
+
+`npm test` предварительно собирает общий runtime asset для тестов: import attribute `type: "bytes"` обрабатывается esbuild, а не самим Node.js. Полные тексты лицензий находятся в [packaging/pi/NOTICE.md](packaging/pi/NOTICE.md); одинаковые тексты хранятся один раз со ссылками из каждого package section. Provenance и изменения заимствованного bridge — в [native-pi/NOTICE.md](native-pi/NOTICE.md).

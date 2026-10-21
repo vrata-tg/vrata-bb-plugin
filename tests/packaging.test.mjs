@@ -27,14 +27,15 @@ async function nativeRuntimeProbe(t) {
   for (const runtime of results) assert.deepEqual(runtime, results[0]);
   assert.equal(readdirSync(join(root, "data/pi-runtime")).length, 1, "Atomic publish must leave only the completed capsule");
   assert.deepEqual(await ensureEmbeddedPi(join(root, "data")), results[0]);
-  const { default: asset } = await import("../packaging/pi/runtime.js");
-  const original = asset.gzipBase64;
+  const { default: asset } = await import("../dist/tests/pi-runtime-asset.js");
+  const bytes = Object.values(asset.files)[0];
+  const original = bytes[0];
   try {
-    asset.gzipBase64 = original.slice(0, -4) + "AAAA";
+    bytes[0] ^= 1;
     await assert.rejects(ensureEmbeddedPi(join(root, "corrupt")), /checksum mismatch/);
-    assert.equal(existsSync(join(root, "corrupt")), false, "A corrupt archive must not publish runtime files");
+    assert.equal(existsSync(join(root, "corrupt")), false, "A corrupt asset must not publish runtime files");
   } finally {
-    asset.gzipBase64 = original;
+    bytes[0] = original;
   }
   const runtime = results[0];
   const { SessionManager } = await import(pathToFileURL(runtime.sdkEntry).href);

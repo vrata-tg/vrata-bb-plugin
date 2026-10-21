@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
-import { gunzipSync } from "node:zlib";
 import runtime from "#vrata-pi-runtime";
 
 export async function ensureEmbeddedPi(dataDir: string) {
@@ -22,21 +21,24 @@ export async function ensureEmbeddedPi(dataDir: string) {
   }
   if (await isPublished()) return entries;
 
-  const compressed = Buffer.from(runtime.gzipBase64, "base64");
-  if (createHash("sha256").update(compressed).digest("hex") !== runtime.sha256) {
+  const files = runtime.files;
+  const digest = createHash("sha256");
+  for (const [path, bytes] of Object.entries(files)) {
+    digest.update(JSON.stringify([path, bytes.byteLength])).update(bytes);
+  }
+  if (digest.digest("hex") !== runtime.sha256) {
     throw new Error("Embedded Pi runtime checksum mismatch");
   }
-  const files = JSON.parse(gunzipSync(compressed).toString("utf8")) as Record<string, ["utf8" | "base64", string]>;
   await mkdir(cacheDir, { recursive: true, mode: 0o700 });
   const staging = await mkdtemp(join(cacheDir, ".extract-"));
   try {
-    for (const [path, [encoding, contents]] of Object.entries(files)) {
+    for (const [path, bytes] of Object.entries(files)) {
       if (isAbsolute(path) || path.includes("\\") || path.split("/").includes("..")) {
         throw new Error("Invalid embedded Pi runtime path");
       }
       const destination = join(staging, path);
       await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
-      await writeFile(destination, Buffer.from(contents, encoding), { mode: 0o600 });
+      await writeFile(destination, bytes, { mode: 0o600 });
     }
     await writeFile(join(staging, ".complete"), runtime.sha256, { mode: 0o600 });
     try {
