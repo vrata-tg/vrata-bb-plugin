@@ -1,39 +1,36 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { StringDecoder } from "node:string_decoder";
 import { setTimeout as delay } from "node:timers/promises";
-import { experimental_createBridgeJsonRpcTestHarness } from "@get-bb/plugin-sdk/provider-bridge/testing";
-import { experimental_providerBridge } from "../dist/host.js";
+import { experimental_resolveProviderBridgeLaunch } from "@get-bb/plugin-sdk/provider-bridge/testing";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 
-export const bridge = experimental_providerBridge;
+export const models = {
+  chat: "gemini-3.8-flash",
+  responses: "gpt-6.1-sol",
+  anthropic: "claude-sonnet-5-5",
+};
 export const options = {
-  model: "mock-code", reasoningLevel: "none", permissionMode: "full",
+  model: models.chat, reasoningLevel: "none", permissionMode: "full",
   permissionScope: "full", approvalReviewer: null, permissionEscalation: null,
 };
 export const textInput = (text) => [{ type: "text", text, mentions: [] }];
-export const defaultModels = ["mock-code", "mock-other"].map((id) => ({
-  id,
-  gateway_metadata: {
-    supports_tools: true, supports_images: true, supports_reasoning: true,
-    max_input_tokens: 32000, max_output_tokens: 4096,
-    verified_transport: "chat_completions",
-  },
-}));
 export const dynamicTool = {
   name: "review_lookup", description: "Look up the supplied value.",
-  inputSchema: {
-    type: "object", properties: { value: { type: "string" } }, required: ["value"],
-    additionalProperties: false,
-  },
+  inputSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
 };
+// Same valid tiny PNG used by packaging.test.mjs.
+export const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AP////8J+wP9o9FJCgAAAABJRU5ErkJggg==";
 export const sleep = delay;
-
-export async function until(predicate, description) {
-  const deadline = Date.now() + 5000;
+export async function until(predicate, description, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const result = predicate();
+    const result = await predicate();
     if (result) return result;
     await delay(10);
   }
@@ -43,9 +40,8 @@ export async function until(predicate, description) {
 export function chunk(response, delta, { finishReason = null, usage } = {}) {
   if (!response.headersSent) response.writeHead(200, { "content-type": "text/event-stream" });
   response.write(`data: ${JSON.stringify({
-    id: "chat-regression", object: "chat.completion.chunk", created: 1, model: "mock-code",
-    choices: [{ index: 0, delta, finish_reason: finishReason }],
-    ...(usage ? { usage } : {}),
+    id: "chat-fixture", object: "chat.completion.chunk", created: 1, model: "gemini-3.8-flash",
+    choices: [{ index: 0, delta, finish_reason: finishReason }], ...(usage ? { usage } : {}),
   })}\n\n`);
 }
 export function finish(response, usage = { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 }) {
@@ -57,156 +53,221 @@ export function answer(response, text = "Loopback answer") {
   finish(response);
 }
 export function callTool(response, name = dynamicTool.name, args = { value: "fixture" }) {
-  chunk(response, { role: "assistant", tool_calls: [{
-    index: 0, id: "call-regression", type: "function",
-    function: { name, arguments: JSON.stringify(args) },
-  }] });
+  chunk(response, { role: "assistant", tool_calls: [{ index: 0, id: `call-fixture-${response.fixtureIndex ?? 0}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] });
   chunk(response, {}, { finishReason: "tool_calls" });
   response.end("data: [DONE]\n\n");
 }
-
-export async function createGateway({ models = defaultModels, onModels, onChat, onResponses } = {}) {
-  const requests = [];
-  const catalogRequests = [];
-  const errors = [];
+function event(response, value) {
+  if (!response.headersSent) response.writeHead(200, { "content-type": "text/event-stream" });
+  response.write(`event: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`);
+}
+export function responsesAnswer(response, text = "Loopback answer") {
+  const item = { type: "message", id: "msg-fixture", role: "assistant", content: [{ type: "output_text", text, annotations: [] }] };
+  event(response, { type: "response.created", response: { id: "resp-fixture" } });
+  event(response, { type: "response.output_item.added", output_index: 0, item: { ...item, content: [] } });
+  event(response, { type: "response.output_text.delta", output_index: 0, delta: text });
+  event(response, { type: "response.output_item.done", output_index: 0, item });
+  event(response, { type: "response.completed", response: { id: "resp-fixture", status: "completed", output: [item], usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } });
+  response.end();
+}
+export function anthropicAnswer(response, text = "Loopback answer") {
+  event(response, { type: "message_start", message: { id: "msg-fixture", type: "message", role: "assistant", model: "claude-sonnet-5-5", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } });
+  event(response, { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+  event(response, { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } });
+  event(response, { type: "content_block_stop", index: 0 });
+  event(response, { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 4 } });
+  event(response, { type: "message_stop" });
+  response.end();
+}
+export async function createGateway({ onChat, onResponses, onAnthropic, onModels } = {}) {
+  const requests = [], catalogRequests = [], errors = [];
   const server = createServer(async (request, response) => {
     try {
-      if (request.url === "/v1/models") {
+      const path = new URL(request.url, "http://loopback").pathname;
+      if (path === "/v1/models") {
         catalogRequests.push(request);
-        const respond = () => {
-          response.writeHead(200, { "content-type": "application/json" });
-          response.end(JSON.stringify({ object: "list", data: models }));
-        };
-        if (onModels) await onModels({ request, response, respond });
-        else respond();
-      } else if (request.url === "/v1/chat/completions" || (request.url === "/v1/responses" && onResponses)) {
-        let raw = "";
-        for await (const data of request) raw += data;
-        const body = JSON.parse(raw);
-        requests.push({ path: request.url, body, authorization: request.headers.authorization });
-        const handler = request.url === "/v1/responses" ? onResponses : onChat;
-        if (handler) await handler({ request, response, body, index: requests.length - 1 });
-        else answer(response);
-      } else {
-        response.writeHead(404).end();
+        const respond = () => response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ object: "list", data: Object.values(models).map((id) => ({ id })) }));
+        if (onModels) await onModels({ request, response, respond }); else respond();
+        return;
       }
-    } catch (error) {
-      errors.push(error);
-      response.destroy();
-    }
+      const routes = { "/v1/chat/completions": [onChat, answer], "/v1/responses": [onResponses, responsesAnswer], "/v1/messages": [onAnthropic, anthropicAnswer] };
+      if (!routes[path]) throw new Error(`Unexpected fixture endpoint ${request.method} ${path}`);
+      let raw = "";
+      for await (const data of request) raw += data;
+      const body = JSON.parse(raw);
+      requests.push({ path, body, authorization: request.headers.authorization, apiKey: request.headers["x-api-key"] });
+      response.fixtureIndex = requests.length - 1;
+      const [handler, respond] = routes[path];
+      if (handler) await handler({ request, response, body, index: requests.length - 1 }); else respond(response);
+    } catch (error) { errors.push(error); response.destroy(); }
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   return {
-    url: `http://127.0.0.1:${server.address().port}`,
-    requests, catalogRequests,
+    url: `http://127.0.0.1:${server.address().port}`, requests, catalogRequests,
+    async close() { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); assert.deepEqual(errors, [], "Loopback API handler failed"); },
+  };
+}
+
+// The two real protocols share framing only. No fake Pi or substitute bridge.
+export function jsonlChild(command, args, { cwd, env }) {
+  const child = spawn(command, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+  const messages = [], decoder = new StringDecoder("utf8");
+  let buffer = "", stderr = "", sequence = 0, cursor = 0, exit;
+  child.stdin.on("error", () => {});
+  child.stdout.on("data", (chunk) => {
+    buffer += decoder.write(chunk);
+    let end;
+    while ((end = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
+      if (line.trim()) {
+        try { messages.push(JSON.parse(line)); }
+        catch { stderr += `Invalid JSONL: ${line}\n`; }
+      }
+    }
+  });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  child.on("error", (error) => { stderr += String(error); exit = { error }; });
+  child.on("exit", (code, signal) => { exit = { code, signal }; });
+  const send = (line) => child.stdin.write(`${line}\n`);
+  return {
+    child, messages, send,
+    get stderr() { return stderr; },
+    takeMessages() { const result = messages.slice(cursor); cursor = messages.length; return result; },
+    async request(method, params, raw = false) {
+      const id = `fixture-${++sequence}`;
+      send(JSON.stringify(raw ? { ...params, type: method, id } : { jsonrpc: "2.0", id, method, params }));
+      const response = await until(() => {
+        const message = messages.find((m) => m.id === id && (raw ? m.type === "response" : !("method" in m)));
+        if (!message && exit) assert.fail(`Child exited: ${JSON.stringify(exit)} ${stderr}`);
+        return message;
+      }, `${method} response; stderr: ${stderr}`, 30000);
+      assert.equal(response.error, undefined, `${method}: ${JSON.stringify(response)} ${stderr}`);
+      if (raw) assert.equal(response.success, true, JSON.stringify(response));
+      return { id, result: raw ? response.data : response.result };
+    },
     async close() {
-      server.closeAllConnections();
-      await new Promise((resolve) => server.close(resolve));
-      assert.deepEqual(errors, [], "Loopback API handler failed");
+      if (exit) return;
+      child.stdin.end();
+      await Promise.race([until(() => exit, "child exit", 12000), delay(1000).then(() => { if (!exit) child.kill("SIGTERM"); })]);
+      await until(() => exit, `child shutdown: ${stderr}`, 12000);
     },
   };
 }
 
-export async function fixture(t, gatewayOptions) {
-  const root = mkdtempSync(join(tmpdir(), "vrata-bridge-regression-"));
-  let dataDir = join(root, "data");
-  mkdirSync(dataDir);
-  const gateways = [];
-  const gateway = await createGateway(gatewayOptions);
-  gateways.push(gateway);
-  let harness;
-  let counter = 0;
-  let current;
+export async function fixture(t, gatewayOptions = {}, { configured = true, settings = {}, closeHook = false } = {}) {
+  const root = mkdtempSync(join(tmpdir(), "vrata-native-test-"));
+  const cwd = join(root, "workspace"), dataDir = join(root, "data"), home = join(root, "home");
+  for (const path of [cwd, dataDir, home]) mkdirSync(path);
+  const gateways = [], children = [];
+  const gateway = await createGateway(gatewayOptions); gateways.push(gateway);
   t.after(async () => {
-    bridge.onClose?.();
-    try {
-      await Promise.all(gateways.map((item) => item.close()));
-      await delay(20);
-    } finally {
-      harness?.restore();
-      rmSync(root, { recursive: true, force: true });
-    }
+    try { for (const child of children) await child.close(); await Promise.all(gateways.map((item) => item.close())); }
+    finally { rmSync(root, { recursive: true, force: true }); }
   });
-  function configure(target = gateway, apiKey = "synthetic-key-a") {
-    writeFileSync(join(dataDir, "credentials.json"), JSON.stringify({
-      apiKey, baseUrl: target.url,
-    }), { mode: 0o600 });
+
+  let transport, current, turnCursor = 0, counter = 0;
+  const configure = (target = gateway, apiKey = "synthetic-key-a") => writeFileSync(join(dataDir, "credentials.json"), JSON.stringify({ apiKey, baseUrl: target.url }), { mode: 0o600 });
+  if (configured) configure();
+  const { preparePiRuntime } = await import("../dist/tests/pi-runtime.js");
+  const runtime = await preparePiRuntime(dataDir);
+  if (Object.keys(settings).length) {
+    const path = join(runtime.agentDir, "settings.json");
+    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), ...settings }), { mode: 0o600 });
   }
-  configure();
-  bridge.start({ pluginId: "vrata", dataDir, tempDir: join(root, "temp") });
-  harness = experimental_createBridgeJsonRpcTestHarness(bridge.handleLine);
-  async function rpc(method, params) {
-    const id = `request-${++counter}`;
-    harness.sendRequest(id, method, params);
-    const response = await harness.waitForResponse(id);
-    assert.equal(response.error, undefined, `${method}: ${JSON.stringify(response.error)}`);
-    return { id, result: response.result };
-  }
-  const deltas = (threadId = current.threadId) => harness.messages
-    .filter((message) => message.method === "thread/delta" && message.params?.threadId === threadId)
-    .flatMap((message) => message.params.deltas);
+  const env = { PATH: process.env.PATH, HOME: home, TMPDIR: root, LANG: "C.UTF-8", PI_OFFLINE: "1", ...runtime.env };
+  const launch = () => {
+    const spec = experimental_resolveProviderBridgeLaunch({ modulePath: resolve("dist/host.js"), pluginId: "vrata", cwd, dataDir });
+    // Only the explicit lifecycle probe needs a direct onClose hook. Ordinary
+    // integration and conformance always use the SDK worker above.
+    const probe = `
+      import { experimental_providerBridge as bridge } from ${JSON.stringify(new URL("../dist/host.js", import.meta.url).href)};
+      bridge.start(${JSON.stringify({ pluginId: "vrata", dataDir, tempDir: root })});
+      let buffer = "";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", chunk => {
+        buffer += chunk;
+        let end;
+        while ((end = buffer.indexOf("\\n")) !== -1) {
+          const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
+          const message = JSON.parse(line);
+          if (message.method === "fixture/onClose") {
+            bridge.onClose();
+            process.stdout.write(JSON.stringify({ id: message.id, result: { closed: true } }) + "\\n");
+          } else bridge.handleLine(line);
+        }
+      });
+      process.stdin.on("end", () => bridge.onClose());
+    `;
+    transport = jsonlChild(spec.command, closeHook ? ["--input-type=module", "--eval", probe] : spec.args, { cwd: spec.cwd, env }); children.push(transport);
+  };
+  launch();
+  const rpc = (method, params) => transport.request(method, params);
+  const initialize = () => rpc("initialize", { client: { name: "native-fixture", version: "1" }, protocolVersion: 2 });
+  await initialize();
+  const deltas = (threadId = current?.threadId) => transport.messages.filter((m) => m.method === "thread/delta" && m.params.threadId === threadId).flatMap((m) => m.params.deltas);
   const clientId = () => `creq_${(++counter).toString(16).replace(/0/g, "x").replace(/1/g, "y").padStart(10, "a")}`;
-  await rpc("initialize", { client: { name: "regression", version: "1" }, protocolVersion: 2 });
+  const savedPath = (id = current.providerThreadId) => join(runtime.sessionDir, `${id.replace(/[^A-Za-z0-9._-]/g, "_")}.jsonl`);
+  const readSession = (id) => {
+    const path = savedPath(id);
+    assert.ok(existsSync(path), `Session has not been persisted: ${path}`);
+    return SessionManager.open(path);
+  };
   return {
-    root, gateway, configure, rpc, deltas, clientId,
-    get dataDir() { return dataDir; },
-    get current() { return current; },
-    get messages() { return harness.messages; },
-    async anotherGateway(gatewayOptions) {
-      const result = await createGateway(gatewayOptions);
-      gateways.push(result);
-      return result;
-    },
+    root, cwd, dataDir, runtime, gateway, configure, rpc, deltas, clientId, savedPath,
+    get current() { return current; }, get messages() { return transport.messages; }, get transport() { return transport; },
+    saved(id) { return readSession(id).buildSessionContext(); },
+    entries(id) { return readSession(id).getBranch(); },
+    async anotherGateway(opts) { const result = await createGateway(opts); gateways.push(result); return result; },
     async start(extra = {}) {
-      const { options: extraOptions, ...rest } = extra;
-      const params = {
-        threadId: "thr_regression", cwd: root, instructionMode: "replace",
-        ...rest, options: { ...options, instructions: "Follow the user request.", ...extraOptions },
-      };
+      const { options: selected, ...rest } = extra;
+      const params = { threadId: "thr_fixture", cwd, instructionMode: "append", ...rest, options: { ...options, ...selected } };
       const { result } = await rpc("thread/start", params);
       current = { threadId: params.threadId, providerThreadId: result.providerThreadId };
+      turnCursor = deltas().length;
       return current;
     },
-    async resume(providerThreadId, extraOptions = { model: "vrata-setup" }) {
-      current = { threadId: "thr_resumed", providerThreadId };
-      return rpc("thread/resume", {
-        ...current, cwd: root, instructionMode: "replace", options: { ...options, ...extraOptions },
-      });
+    async resume(providerThreadId, selected = { model: "vrata-setup", reasoningLevel: undefined }) {
+      current = { threadId: `thr_resumed_${++counter}`, providerThreadId };
+      const result = await rpc("thread/resume", { ...current, cwd, instructionMode: "append", options: { ...options, ...selected } });
+      turnCursor = deltas().length;
+      return result;
     },
-    async turn(text, extraOptions = {}) {
-      return rpc("turn/start", {
-        ...current, input: typeof text === "string" ? textInput(text) : text,
-        clientRequestId: clientId(), options: { ...options, ...extraOptions },
-      });
+    async turn(text, selected = {}) {
+      turnCursor = deltas().length;
+      return rpc("turn/start", { ...current, input: typeof text === "string" ? textInput(text) : text, clientRequestId: clientId(), options: { ...options, ...selected } });
     },
     async steer(text) {
       const id = clientId();
-      await rpc("turn/steer", {
-        ...current, expectedTurnId: "turn-active", input: textInput(text),
-        clientRequestId: id, options,
-      });
+      await rpc("turn/steer", { ...current, expectedTurnId: "turn-active", input: textInput(text), clientRequestId: id, options });
       return id;
     },
-    stop(intent = "interrupt") {
-      return rpc("thread/stop", { ...current, activeTurnId: intent === "release" ? null : "turn-active", intent });
-    },
-    async boundary(count = 1) {
-      await until(() => deltas().filter((delta) => delta.kind === "turn.boundary").length >= count, `boundary ${count}`);
-      return deltas().filter((delta) => delta.kind === "turn.boundary").at(-1);
-    },
-    savedPath(providerThreadId = current.providerThreadId) { return join(dataDir, "sessions", `${providerThreadId}.json`); },
-    saved(providerThreadId = current.providerThreadId) {
-      return JSON.parse(readFileSync(join(dataDir, "sessions", `${providerThreadId}.json`), "utf8"));
-    },
-    reply(id, result) { bridge.handleLine(JSON.stringify({ jsonrpc: "2.0", id, result })); },
-    toolCall() {
-      return until(() => harness.messages.find((message) => message.method === "item/tool/call"), "dynamic tool call");
-    },
-    restart() {
-      dataDir = join(root, `restart-${++counter}`);
-      mkdirSync(dataDir);
-      configure();
-      bridge.start({ pluginId: "vrata", dataDir, tempDir: join(root, "temp") });
+    stop(intent = "interrupt") { return rpc("thread/stop", { ...current, activeTurnId: intent === "release" ? null : "turn-active", intent }); },
+    async boundary() { return until(() => deltas().slice(turnCursor).find((d) => d.kind === "turn.boundary" && d.status && !d.providerCheckpointId), `terminal boundary: ${transport.stderr}`, 30000); },
+    reply(id, result) { transport.send(JSON.stringify({ jsonrpc: "2.0", id, result })); },
+    replyError(id, message) { transport.send(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message } })); },
+    toolCall() { return until(() => transport.messages.find((m) => m.method === "item/tool/call"), "dynamic tool call"); },
+    interaction(kind) { return until(() => transport.messages.find((m) => m.method === "interaction/request" && m.params.payload.kind === kind), kind); },
+    async restart() { await transport.close(); launch(); await initialize(); },
+    async raw({ model = models.chat, thinking = "off", sessionFile = join(runtime.sessionDir, "raw.jsonl"), extraArgs = [] } = {}) {
+      const cli = join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))), "bundle", "cli.js");
+      const referencePackage = JSON.parse(readFileSync(join(dirname(dirname(cli)), "..", "package.json"), "utf8"));
+      assert.equal(referencePackage.version, "1.3.0", "Raw parity oracle must use pinned Pi 1.3.0");
+      const { guideModels } = await import("../dist/tests/vrata.js");
+      const extensionPath = join(root, "raw-guide.mjs");
+      // Ordinary user guide registration: no candidate auth/redaction/stream wrapper.
+      writeFileSync(extensionPath, `export default function(pi) { pi.registerProvider("vrata.tg", ${JSON.stringify({ baseUrl: gateway.url + "/v1", apiKey: "synthetic-key-a", models: guideModels(gateway.url) })}); }`);
+      const child = jsonlChild(process.execPath, [cli, "--mode", "rpc", "--session", sessionFile, "--session-dir", runtime.sessionDir, "--extension", extensionPath, ...(model ? ["--model", model.includes("/") ? model : `vrata.tg/${model}`] : []), ...(thinking ? ["--thinking", thinking] : []), ...extraArgs], { cwd, env });
+      children.push(child);
+      await child.request("get_state", {}, true);
+      let cursor = child.messages.length;
+      return {
+        child, sessionFile,
+        rpc: (type, params = {}) => child.request(type, params, true),
+        async prompt(text) { cursor = child.messages.length; return child.request("prompt", { message: text }, true); },
+        async settled() { return until(() => child.messages.slice(cursor).find((m) => m.type === "agent_settled"), `raw agent settled: ${child.stderr}`, 30000); },
+        saved: () => SessionManager.open(sessionFile).buildSessionContext(),
+        entries: () => SessionManager.open(sessionFile).getBranch(),
+      };
     },
   };
 }

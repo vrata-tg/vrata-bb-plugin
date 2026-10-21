@@ -1,13 +1,19 @@
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
+import { homedir } from "node:os";
+import { experimental_defineHostEntry, experimental_nativeRootsHostContract } from "@get-bb/plugin-sdk/host";
 import { credentialsContract } from "./contract.js";
+import { resolvePiNativeRoots } from "./native-roots.js";
 
 export { experimental_providerBridge } from "./bridge.js";
 
 export default experimental_defineHostEntry({
-  contract: credentialsContract,
+  contract: { ...credentialsContract, ...experimental_nativeRootsHostContract },
   handlers: {
+    resolveNativeRoots: (_input, context) => resolvePiNativeRoots({
+      homeDir: homedir(),
+      agentDir: join(dirname(context.experimental_paths.dataDir), "bridge-data", "pi-agent"),
+    }),
     sync: ({ apiKey, baseUrl }, context) => {
       // bb gives the host worker and the bridge separate directories under
       // the same plugin root. The bridge reads only its own bridge-data.

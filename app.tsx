@@ -78,7 +78,7 @@ const reasoningLabels: Record<string, string> = {
 
 function ModelForm({ interaction, submit }: PluginPendingInteractionProps) {
   const payload = interaction.payload;
-  const data = payload && typeof payload === "object" && !Array.isArray(payload) && "data" in payload ? payload.data : null;
+  const data = payload;
   const rawModels = data && typeof data === "object" && !Array.isArray(data) && "models" in data ? data.models : null;
   const models = Array.isArray(rawModels) ? rawModels.filter((value): value is { id: string; name: string; reasoningLevels: string[] } =>
     value !== null && typeof value === "object" && !Array.isArray(value) && typeof value.id === "string" && typeof value.name === "string"

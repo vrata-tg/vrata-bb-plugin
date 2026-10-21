@@ -31,8 +31,10 @@ provides direct entry prompts.
 - Preserve session cancellation, rejection of late results, atomic session
   persistence and restoration of model and reasoning selections.
 - Preserve the configurable API base URL. Model discovery and key validation
-  use read-only requests. Do not add retries or redirects to paid requests,
-  or paid generation to routine verification.
+  use read-only requests. Use the guide configuration for native Pi retries:
+  enabled, maxRetries 20, httpIdleTimeoutMs and provider timeoutMs 3900000,
+  provider maxRetries 0. Preserve native compaction and overflow recovery.
+  Do not add paid generation to routine verification.
 - Use synthetic credentials and loopback HTTP in tests. Keep generated `dist/`,
   dependencies and runtime state out of git.
 - Keep model transport in the pinned Pi runtime and use its bundled coding

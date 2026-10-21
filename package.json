@@ -3,12 +3,13 @@
   "version": "0.1.0",
   "type": "module",
   "imports": {
-    "#vrata-image-runtime": "./packaging/image-resize-core.js"
+    "#vrata-pi-runtime": "./packaging/pi/runtime.js"
   },
   "description": "Врата AI provider for bb with an embedded Pi agent runtime",
   "engines": {
     "bb": ">=0.41",
-    "bbPluginSdk": ">=0.4.34"
+    "bbPluginSdk": ">=0.4.34",
+    "node": ">=22.19.0"
   },
   "bb": {
     "name": "Врата AI",
@@ -26,17 +27,19 @@
     "test": "tsc -p tsconfig.tests.json && node --test --test-concurrency=1 tests/*.test.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.84.0",
-    "@earendil-works/pi-ai": "0.84.0",
-    "@earendil-works/pi-coding-agent": "0.84.0",
+    "@earendil-works/pi-agent-core": "1.3.0",
+    "@earendil-works/pi-ai": "1.3.0",
+    "@earendil-works/pi-coding-agent": "1.3.0",
     "@get-bb/plugin-sdk": "0.4.34",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^22.0.0",
     "@types/react": "^19.3.0",
     "jsdom": "^26.1.0",
     "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "typescript": "^5.7.0"
   }
 }

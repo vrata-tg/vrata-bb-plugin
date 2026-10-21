@@ -5,5 +5,9 @@
     "rootDir": ".",
     "outDir": "./dist/tests"
   },
-  "include": ["balance.ts", "balance-footer.ts", "balance-events.ts", "vrata.ts", "transport.ts", "server.ts", "bridge-events.ts", "image-runtime.ts", "bridge-input.ts"]
+  "include": [
+    "*.ts",
+    "*.tsx",
+    "native-pi/**/*.ts"
+  ]
 }

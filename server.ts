@@ -3,6 +3,7 @@ import { accountContract, credentialsContract, DEFAULT_BASE_URL, setupContract }
 import { apiBaseUrl, fetchModels } from "./vrata.js";
 import { fetchBalance } from "./balance.js";
 import { registerBalanceEvents } from "./balance-events.js";
+import { PI_NATIVE_ROOTS_DECLARATION } from "./native-roots.js";
 
 const setupModel = {
   id: "vrata-setup",
@@ -140,12 +141,13 @@ export default function plugin(bb: BbPluginApi): void {
       brandPrefix: "Врата AI ",
     },
     maintenance: { health: true, usage: false, installation: false },
+    ...PI_NATIVE_ROOTS_DECLARATION,
     composerActions: [],
     capabilities: {
       supportsServiceTier: false,
       supportsNativeUserQuestion: false,
-      fork: "none",
-      supportsManualCompaction: false,
+      fork: "checkpoint",
+      supportsManualCompaction: true,
       supportsThreadArchive: false,
       supportsThreadRename: false,
       permissionModes: ["full"],
