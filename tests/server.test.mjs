@@ -1,275 +1,177 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
 import { test } from "node:test";
 import plugin from "../dist/server.js";
 
-const initialSettings = { apiKey: "synthetic-key-a", baseUrl: "http://127.0.0.1:19001" };
-const nextSettings = { apiKey: "synthetic-key-b", baseUrl: "http://127.0.0.1:19002" };
-const settle = () => new Promise((resolve) => setImmediate(resolve));
+const draft = { apiKey: "synthetic-key-a", baseUrl: "http://127.0.0.1:19001" };
+const threadTarget = { kind: "thread", threadId: "waiting-thread" };
+const hostTarget = { kind: "host", hostId: "target" };
+const configured = { configured: true, baseUrl: `${draft.baseUrl}/v1` };
 
 function serverMock(t, {
-  hosts = ["target", "other"],
-  sync = async () => ({ configured: true }),
-  readSettings = async (snapshot) => snapshot,
+  call = async (method) => method === "balance" ? { status: "unconfigured" }
+    : method === "deleteCredentials" ? { configured: false, baseUrl: "https://api.vrata.tg" } : configured,
+  environmentId = "thread-environment",
 } = {}) {
-  let values = { ...initialSettings };
-  let settingsChanged;
-  let hostContract;
   const methods = new Map();
+  const routes = new Map();
   const disposers = [];
   const calls = [];
   const lookups = [];
-  const warnings = [];
-  const active = new Map();
-  const maxActive = new Map();
-  const written = new Map();
+  const machines = [
+    { id: "target", name: "Thread machine", status: "connected" },
+    { id: "other", name: "Other machine", status: "disconnected" },
+  ];
+  let registrations = 0;
+  let providerDisposals = 0;
+  const dispose = () => { for (const disposer of disposers.splice(0).reverse()) disposer(); };
   const bb = {
-    settings: {
-      define: () => ({
-        get: async () => readSettings({ ...values }),
-        onChange: (callback) => { settingsChanged = callback; },
+    get settings() { throw new Error("Legacy central settings must remain inert"); },
+    get background() { throw new Error("Credential synchronization must not run"); },
+    hosts: {
+      experimental_client: ({ contract }) => ({
+        async call(method, input, { hostId, signal }) {
+          input = contract[method].input.parse(input);
+          calls.push({ method, input, hostId, signal });
+          return contract[method].output.parse(await call(method, input, { hostId, signal }));
+        },
       }),
     },
-    hosts: {
-      experimental_client: ({ contract }) => {
-        hostContract = contract;
-        return {
-          async call(method, input, { hostId }) {
-            const snapshot = hostContract[method].input.parse(input);
-            calls.push({ hostId, ...snapshot });
-            active.set(hostId, (active.get(hostId) ?? 0) + 1);
-            maxActive.set(hostId, Math.max(maxActive.get(hostId) ?? 0, active.get(hostId)));
-            try {
-              const result = hostContract[method].output.parse(await sync({ hostId, ...snapshot }));
-              if (result.configured) written.set(hostId, snapshot);
-              else written.delete(hostId);
-              return result;
-            } finally {
-              active.set(hostId, active.get(hostId) - 1);
-            }
-          },
-        };
-      },
-    },
     sdk: {
-      hosts: { list: async () => hosts.map((id) => ({ id })) },
-      threads: { get: async (args) => { lookups.push(args); return { environmentId: "thread-environment" }; } },
-      environments: { get: async (args) => { lookups.push(args); return { hostId: "target" }; } },
-    },
-    rpc: {
-      register: (contract, handlers) => {
-        for (const [name, handler] of Object.entries(handlers)) methods.set(name, { handler, schema: contract[name] });
+      hosts: {
+        list: async () => machines,
+        get: async ({ hostId }) => {
+          lookups.push(["host", hostId]);
+          const machine = machines.find(({ id }) => id === hostId);
+          if (!machine) throw new Error(`${draft.apiKey}: private lookup detail`);
+          return machine;
+        },
       },
+      threads: { get: async ({ threadId }) => { lookups.push(["thread", threadId]); return { environmentId }; } },
+      environments: { get: async ({ environmentId }) => { lookups.push(["environment", environmentId]); return { hostId: "target" }; } },
     },
-    providers: { register: () => ({ dispose() {} }) },
-    background: { service() {} },
+    rpc: { register: (contract, handlers) => {
+      for (const [name, handler] of Object.entries(handlers)) methods.set(name, { handler, schema: contract[name] });
+    } },
+    providers: { register: () => { registrations++; return { dispose() { providerDisposals++; } }; } },
     events: { on() {} },
-    http: { route() {} },
-    log: { warn: (message) => warnings.push(message) },
-    onDispose: (dispose) => disposers.push(dispose),
+    http: { route: (method, path, handler) => routes.set(`${method} ${path}`, handler) },
+    onDispose: (callback) => disposers.push(callback),
   };
   plugin(bb);
-  t.after(() => { for (const dispose of disposers.reverse()) dispose(); });
+  t.after(dispose);
   return {
-    bb, calls, lookups, warnings, written, maxActive,
-    changeSettings(next, notify = true) {
-      const previous = values;
-      values = { ...next };
-      if (notify) settingsChanged(values, previous);
-    },
-    async waitForKey(input = { threadId: "waiting-thread" }) {
-      const { handler, schema } = methods.get("waitForKey");
+    calls, lookups, machines, dispose,
+    get registrations() { return registrations; },
+    get providerDisposals() { return providerDisposals; },
+    async rpc(name, input) {
+      const { handler, schema } = methods.get(name);
       return schema.output.parse(await handler(schema.input.parse(input)));
     },
-    async validateKey(apiKey) {
-      const { handler, schema } = methods.get("validateKey");
-      return schema.output.parse(await handler(schema.input.parse({ apiKey })));
+    subscribe() {
+      const controller = new AbortController();
+      const response = routes.get("GET /balance-events")({ req: { raw: { signal: controller.signal } } });
+      t.after(() => controller.abort());
+      return { reader: response.body.getReader(), close: () => controller.abort() };
     },
   };
 }
 
-test("onboarding rejects target failure even when another host succeeds, without leaking host errors", async (t) => {
-  const mock = serverMock(t, {
-    sync: async ({ hostId, apiKey }) => {
-      if (hostId === "target") throw new Error(`${apiKey}: private host detail`);
-      return { configured: true };
-    },
-  });
-  mock.changeSettings(initialSettings);
-  await settle();
-  assert.deepEqual(mock.written.get("other"), initialSettings);
-  await assert.rejects(mock.waitForKey(), (error) => {
-    assert.doesNotMatch(error.message, /synthetic-key|private host detail/);
-    return true;
-  });
-  assert.equal(mock.written.has("target"), false);
-  assert.ok(mock.warnings.length > 0);
-  assert.doesNotMatch(mock.warnings.join("\n"), /synthetic-key|private host detail/);
-});
+const safeError = (error) => {
+  assert.doesNotMatch(error.message, /synthetic-key|private .* detail/);
+  return true;
+};
 
-test("onboarding resolves the thread host server-side and explicitly writes it even outside the host list", async (t) => {
-  const mock = serverMock(t, { hosts: ["other"] });
-  await assert.rejects(mock.waitForKey({ threadId: "waiting-thread", hostId: "other" }));
-  assert.equal(mock.calls.length, 0);
-  assert.deepEqual(await mock.waitForKey(), { configured: true });
-  assert.deepEqual(mock.lookups, [{ threadId: "waiting-thread" }, { environmentId: "thread-environment" }]);
-  assert.deepEqual(mock.calls, [{ hostId: "target", ...initialSettings }]);
-  assert.deepEqual(mock.written.get("target"), initialSettings);
-});
-
-test("a fulfilled host call with configured:false does not finish onboarding", async (t) => {
-  const mock = serverMock(t, { sync: async () => ({ configured: false }) });
-  await assert.rejects(mock.waitForKey());
-  assert.equal(mock.written.has("target"), false);
-});
-
-test("background and onboarding writes serialize per host and finish with the latest key and URL", { timeout: 3000 }, async (t) => {
-  const oldStarted = Promise.withResolvers();
-  const oldWrite = Promise.withResolvers();
-  const latestStarted = Promise.withResolvers();
-  const latestWrite = Promise.withResolvers();
-  t.after(() => { oldWrite.resolve(); latestWrite.resolve(); });
-  let targetWrites = 0;
-  const mock = serverMock(t, {
-    sync: async ({ hostId }) => {
-      if (hostId === "target") {
-        targetWrites += 1;
-        if (targetWrites === 1) {
-          oldStarted.resolve();
-          await oldWrite.promise;
-        } else if (targetWrites === 2) {
-          latestStarted.resolve();
-          await latestWrite.promise;
-        }
-      }
-      return { configured: true };
-    },
-  });
-  mock.changeSettings(initialSettings);
-  await oldStarted.promise;
-  let completed = false;
-  const pending = mock.waitForKey().then((result) => { completed = true; return result; });
-  await settle();
-  mock.changeSettings(nextSettings);
-  oldWrite.resolve();
-  await latestStarted.promise;
-  assert.equal(completed, false);
-  assert.equal(mock.maxActive.get("target"), 1);
-  latestWrite.resolve();
-  assert.deepEqual(await pending, { configured: true });
-  await settle();
-  assert.equal(mock.maxActive.get("target"), 1);
-  assert.deepEqual(mock.written.get("target"), nextSettings);
-  const targetCalls = mock.calls.filter(({ hostId }) => hostId === "target");
-  assert.ok(targetCalls.length >= 2);
-  assert.deepEqual(targetCalls[0], { hostId: "target", ...initialSettings });
-  assert.ok(targetCalls.slice(1).every(({ apiKey, baseUrl }) => apiKey === nextSettings.apiKey && baseUrl === nextSettings.baseUrl));
-});
-
-test("onboarding rechecks saved settings after acknowledgement even before the change event arrives", { timeout: 3000 }, async (t) => {
-  const started = Promise.withResolvers();
-  const write = Promise.withResolvers();
-  t.after(() => write.resolve());
-  let first = true;
-  const mock = serverMock(t, {
-    sync: async () => {
-      if (first) {
-        first = false;
-        started.resolve();
-        await write.promise;
-      }
-      return { configured: true };
-    },
-  });
-  const pending = mock.waitForKey();
-  await started.promise;
-  mock.changeSettings(nextSettings, false);
-  write.resolve();
-  assert.deepEqual(await pending, { configured: true });
-  assert.deepEqual(mock.calls, [
-    { hostId: "target", ...initialSettings },
-    { hostId: "target", ...nextSettings },
-  ]);
-  assert.deepEqual(mock.written.get("target"), nextSettings);
-});
-
-test("removing the key during a target write invalidates its earlier acknowledgement", { timeout: 3000 }, async (t) => {
-  const started = Promise.withResolvers();
-  const write = Promise.withResolvers();
-  t.after(() => write.resolve());
-  const mock = serverMock(t, {
-    sync: async ({ apiKey }) => {
-      if (apiKey) {
-        started.resolve();
-        await write.promise;
-      }
-      return { configured: Boolean(apiKey) };
-    },
-  });
-  const pending = assert.rejects(mock.waitForKey());
-  await started.promise;
-  mock.changeSettings({ ...initialSettings, apiKey: "" }, false);
-  write.resolve();
-  await pending;
-  assert.equal(mock.calls.at(-1).apiKey, "");
-  assert.equal(mock.written.has("target"), false);
-});
-
-test("a settings change during the final settings read cannot complete onboarding with a stale acknowledgement", { timeout: 3000 }, async (t) => {
-  const checking = Promise.withResolvers();
-  const staleRead = Promise.withResolvers();
-  const latestStarted = Promise.withResolvers();
-  const latestWrite = Promise.withResolvers();
-  t.after(() => { staleRead.resolve(); latestWrite.resolve(); });
-  let reads = 0;
-  const mock = serverMock(t, {
-    hosts: ["target"],
-    readSettings: async (snapshot) => {
-      if (++reads === 2) {
-        checking.resolve();
-        await staleRead.promise;
-      }
-      return snapshot;
-    },
-    sync: async ({ apiKey }) => {
-      if (apiKey === nextSettings.apiKey) {
-        latestStarted.resolve();
-        await latestWrite.promise;
-      }
-      return { configured: true };
-    },
-  });
-  let completed = false;
-  const pending = mock.waitForKey().then((result) => { completed = true; return result; });
-  await checking.promise;
-  mock.changeSettings(nextSettings);
-  staleRead.resolve();
-  await latestStarted.promise;
-  await settle();
-  assert.equal(completed, false);
-  latestWrite.resolve();
-  assert.deepEqual(await pending, { configured: true });
-  assert.deepEqual(mock.written.get("target"), nextSettings);
-  assert.equal(mock.maxActive.get("target"), 1);
-});
-
-test("key validation hides upstream parse errors and uses only loopback model GETs", async (t) => {
-  let requests = 0;
-  const upstream = createServer((request, response) => {
-    requests += 1;
-    assert.equal(request.method, "GET");
-    assert.equal(request.url, "/v1/models");
-    assert.equal(request.headers.authorization, "Bearer synthetic-validation-key");
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end("synthetic-validation-key private upstream detail");
-  });
-  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => upstream.close(resolve)));
+test("registration and host listing never read central settings or contact a host", async (t) => {
   const mock = serverMock(t);
-  mock.changeSettings({ ...initialSettings, baseUrl: `http://127.0.0.1:${upstream.address().port}` }, false);
-  await assert.rejects(mock.validateKey("synthetic-validation-key"), (error) => {
-    assert.doesNotMatch(error.message, /synthetic|private upstream detail/);
-    return true;
+  assert.deepEqual(await mock.rpc("listHosts", null), mock.machines);
+  assert.deepEqual(mock.calls, []);
+  assert.deepEqual(mock.lookups, []);
+  assert.equal(mock.registrations, 1);
+});
+
+test("onboarding resolves thread → environment → host and rejects an app-supplied override", async (t) => {
+  const mock = serverMock(t);
+  await assert.rejects(mock.rpc("saveCredentials", { ...draft, target: { ...threadTarget, hostId: "other" } }));
+  assert.equal(mock.calls.length, 0);
+  const result = await mock.rpc("saveCredentials", { ...draft, target: threadTarget });
+  assert.deepEqual(result, { ...configured, hostId: "target", hostName: "Thread machine" });
+  assert.deepEqual(mock.lookups, [["thread", "waiting-thread"], ["environment", "thread-environment"], ["host", "target"]]);
+  assert.equal(mock.calls.length, 1);
+  assert.deepEqual({ ...mock.calls[0], signal: undefined }, { method: "saveCredentials", input: draft, hostId: "target", signal: undefined });
+  assert.doesNotMatch(JSON.stringify(result), /synthetic-key|apiKey/);
+  assert.equal(mock.registrations, 2);
+  assert.equal(mock.providerDisposals, 1);
+});
+
+test("target failure never falls back to another working host or exposes host errors", async (t) => {
+  const mock = serverMock(t, { call: async (_method, _input, { hostId }) => {
+    if (hostId === "target") throw new Error(`${draft.apiKey}: private host detail`);
+    return configured;
+  } });
+  await mock.rpc("getConfiguration", { target: { kind: "host", hostId: "other" } });
+  mock.calls.length = 0;
+  await assert.rejects(mock.rpc("saveCredentials", { ...draft, target: threadTarget }), safeError);
+  assert.deepEqual(mock.calls.map(({ hostId }) => hostId), ["target"]);
+  assert.equal(mock.registrations, 1);
+});
+
+test("configured:false, absent environment and unknown host cannot acknowledge setup", async (t) => {
+  const falseAck = serverMock(t, { call: async () => ({ ...configured, configured: false }) });
+  await assert.rejects(falseAck.rpc("saveCredentials", { ...draft, target: threadTarget }), safeError);
+  assert.equal(falseAck.registrations, 1);
+  const noEnvironment = serverMock(t, { environmentId: null });
+  await assert.rejects(noEnvironment.rpc("saveCredentials", { ...draft, target: threadTarget }), safeError);
+  await assert.rejects(noEnvironment.rpc("getConfiguration", { target: { kind: "host", hostId: "unknown" } }), safeError);
+  assert.equal(noEnvironment.calls.length, 0);
+});
+
+test("read, balance and delete use only the explicit host; only mutations invalidate", async (t) => {
+  const mock = serverMock(t);
+  const subscription = mock.subscribe();
+  const next = async () => new TextDecoder().decode((await subscription.reader.read()).value);
+  assert.equal(await next(), "data: refresh\n\n");
+  assert.deepEqual(await mock.rpc("getConfiguration", { target: hostTarget }), { ...configured, hostId: "target", hostName: "Thread machine" });
+  assert.deepEqual(await mock.rpc("balance", { hostId: "target" }), { status: "unconfigured" });
+  await assert.rejects(mock.rpc("balance", null));
+  await mock.rpc("saveCredentials", { ...draft, target: hostTarget });
+  assert.equal(await next(), "data: refresh\n\n");
+  assert.deepEqual(await mock.rpc("deleteCredentials", { hostId: "target" }), {
+    hostId: "target", hostName: "Thread machine", configured: false, baseUrl: "https://api.vrata.tg",
   });
-  assert.equal(requests, 2);
+  assert.equal(await next(), "data: refresh\n\n");
+  assert.deepEqual(mock.calls.map(({ method, hostId }) => [method, hostId]), [
+    ["getConfiguration", "target"], ["balance", "target"], ["saveCredentials", "target"], ["deleteCredentials", "target"],
+  ]);
+  assert.equal(mock.registrations, 3);
+  assert.equal(mock.providerDisposals, 2);
+  subscription.close();
+  assert.equal((await subscription.reader.read()).done, true);
+});
+
+test("server disposal aborts in-flight host validation and rejects a late acknowledgement", { timeout: 3000 }, async (t) => {
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  const mock = serverMock(t, { call: async (_method, _input, { signal }) => {
+    started.resolve(signal);
+    await release.promise;
+    return configured;
+  } });
+  const pending = assert.rejects(mock.rpc("saveCredentials", { ...draft, target: threadTarget }), safeError);
+  const signal = await started.promise;
+  mock.dispose();
+  assert.equal(signal.aborted, true);
+  release.resolve();
+  await pending;
+  assert.equal(mock.registrations, 1);
+  await assert.rejects(mock.rpc("getConfiguration", { target: hostTarget }), safeError);
+  assert.equal(mock.calls.length, 1);
+});
+
+test("unavailable balance returns a static error and never tries another host", async (t) => {
+  const mock = serverMock(t, { call: async () => { throw new Error(`${draft.apiKey}: private balance detail`); } });
+  const result = await mock.rpc("balance", { hostId: "target" });
+  assert.equal(result.status, "error");
+  assert.doesNotMatch(result.message, /synthetic-key|private balance detail/);
+  assert.deepEqual(mock.calls.map(({ hostId }) => hostId), ["target"]);
 });

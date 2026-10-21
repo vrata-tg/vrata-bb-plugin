@@ -1,5 +1,7 @@
-import type { PluginContentScriptContext } from "@get-bb/plugin-sdk/app";
+import type { PluginContentScriptContext, PluginRpcResult } from "@get-bb/plugin-sdk/app";
 import { balanceResultSchema, formatRubles, type BalanceResult } from "./balance.js";
+
+import { configurationContract } from "./contract.js";
 
 const footerSelector = '[data-sidebar="footer"]';
 
@@ -7,6 +9,11 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
   if (signal.aborted) return () => {};
   const rows = new Map<Element, HTMLDivElement>();
   const controller = new AbortController();
+  let hosts: PluginRpcResult<typeof configurationContract.listHosts> = [];
+  let hostsError = false;
+  let hostId = "";
+  let requestEpoch = 0;
+  let balanceController = new AbortController();
   let disposed = false;
   let busy = false;
   let refreshPending = false;
@@ -14,9 +21,21 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
   let state: BalanceResult | null = null;
 
   function render(row: HTMLDivElement): void {
+    const selector = row.querySelector("select")!;
+    if (selector.options.length === 1 && hosts.length) {
+      for (const host of hosts) {
+        const option = document.createElement("option");
+        option.value = host.id;
+        option.textContent = `${host.name}${host.status === "disconnected" ? " (не подключена)" : ""}`;
+        selector.append(option);
+      }
+    }
+    const placeholder = hostsError ? "Список машин недоступен" : "Выберите машину";
+    if (selector.options[0]!.textContent !== placeholder) selector.options[0]!.textContent = placeholder;
+    selector.value = hostId;
     const button = row.querySelector("button")!;
     const label = state?.status === "ok" ? formatRubles((BigInt(state.spendable) + BigInt(state.reserved)).toString())
-      : state?.status === "error" ? "Баланс недоступен" : "Баланс…";
+      : state?.status === "error" ? "Баланс недоступен" : state?.status === "unconfigured" ? "Ключ не настроен" : hostId ? "Баланс…" : "Выберите машину";
     const title = state?.status === "ok"
       ? [
         `Всего (включая резерв): ${label}`,
@@ -27,14 +46,14 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
         `Проверено: ${new Date(state.checkedAt).toLocaleString("ru-RU")}`,
         "Нажмите, чтобы обновить",
       ].join("\n")
-      : state?.status === "error" ? `${state.message}\nНажмите, чтобы обновить` : "Получаем баланс Врата AI";
+      : state?.status === "error" ? `${state.message}\nНажмите, чтобы обновить`
+      : state?.status === "unconfigured" ? "Настройте ключ для этой машины в настройках Врата AI"
+      : hostId ? "Получаем баланс Врата AI" : "Выберите машину для просмотра баланса";
     // Avoid needless DOM mutations: the observer also sees changes inside our rows.
     if (button.lastElementChild?.textContent !== label) button.lastElementChild!.textContent = label;
     button.title = title;
-    row.hidden = state?.status === "unconfigured";
-    row.style.display = row.hidden ? "none" : "";
-    button.disabled = busy;
-    button.setAttribute("aria-label", `Врата AI: ${label}. Обновить баланс`);
+    button.disabled = busy || !hostId;
+    button.setAttribute("aria-label", `Врата AI, ${hosts.find((host) => host.id === hostId)?.name ?? "машина не выбрана"}: ${label}. Обновить баланс`);
     button.setAttribute("aria-busy", String(busy));
   }
 
@@ -42,6 +61,7 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
     for (const [footer, row] of rows) {
       if (!footer.isConnected) {
         row.querySelector("button")!.removeEventListener("click", onRefresh);
+        row.querySelector("select")!.removeEventListener("change", onHostChange);
         row.remove();
         rows.delete(footer);
       }
@@ -52,7 +72,17 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
         row = document.createElement("div");
         row.dataset.vrataBalance = "";
         row.dataset.bbPlugin = pluginId;
-        row.className = "flex w-full items-center gap-1 text-xs text-sidebar-foreground";
+        row.className = "flex w-full flex-col gap-1 text-xs text-sidebar-foreground";
+        const selector = document.createElement("select");
+        selector.setAttribute("aria-label", "Машина для баланса Врата AI");
+        selector.className = "w-full rounded-md bg-transparent px-2 py-1.5";
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "Выберите машину";
+        selector.append(placeholder);
+        selector.addEventListener("change", onHostChange);
+        const line = document.createElement("div");
+        line.className = "flex w-full items-center gap-1";
         const button = document.createElement("button");
         button.type = "button";
         button.className = "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-md px-2 py-1.5 hover:bg-sidebar-accent focus-visible:outline focus-visible:outline-2 disabled:cursor-wait";
@@ -70,7 +100,8 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
         topUp.textContent = "Пополнить";
         topUp.title = "Пополнить баланс в боте Врата AI";
         topUp.className = "shrink-0 rounded-md border px-2 py-1.5 hover:bg-sidebar-accent focus-visible:outline focus-visible:outline-2";
-        row.append(button, topUp);
+        line.append(button, topUp);
+        row.append(selector, line);
         rows.set(footer, row);
         render(row);
       }
@@ -79,7 +110,8 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
   }
 
   async function refresh(): Promise<void> {
-    if (disposed) return;
+    if (disposed || !hostId) return;
+    const epoch = requestEpoch;
     window.clearTimeout(timer);
     if (busy) { refreshPending = true; return; }
     if (document.visibilityState === "hidden" || !navigator.onLine) {
@@ -89,22 +121,13 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
     busy = true;
     rows.forEach(render);
     try {
-      const response = await fetch(`/api/v1/plugins/${encodeURIComponent(pluginId)}/rpc/balance`, {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-bb-app-surface": "web" },
-        credentials: "same-origin",
-        body: "null",
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]),
-      });
-      const body = await response.json() as { ok?: unknown; result?: unknown };
-      if (!response.ok || body?.ok !== true) throw new Error("Balance RPC failed");
-      const result = balanceResultSchema.parse(body.result);
-      if (!disposed) state = result;
+      const result = balanceResultSchema.parse(await rpc("balance", { hostId }, balanceController.signal));
+      if (!disposed && epoch === requestEpoch) state = result;
     } catch {
-      if (!disposed) state = { status: "error", message: "Не удалось обновить баланс Врата AI. Повторите попытку." };
+      if (!disposed && epoch === requestEpoch) state = { status: "error", message: "Не удалось обновить баланс Врата AI. Повторите попытку." };
     } finally {
-      busy = false;
-      if (!disposed) {
+      if (!disposed && epoch === requestEpoch) {
+        busy = false;
         rows.forEach(render);
         if (refreshPending) {
           refreshPending = false;
@@ -112,6 +135,32 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
         } else timer = window.setTimeout(onRefresh, 30_000);
       }
     }
+  }
+
+  async function rpc(method: "balance" | "listHosts", input: unknown, requestSignal: AbortSignal): Promise<unknown> {
+    const response = await fetch(`/api/v1/plugins/${encodeURIComponent(pluginId)}/rpc/${method}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-bb-app-surface": "web" },
+      credentials: "same-origin",
+      body: JSON.stringify(input),
+      signal: AbortSignal.any([controller.signal, requestSignal, AbortSignal.timeout(20_000)]),
+    });
+    const body = await response.json() as { ok?: unknown; result?: unknown };
+    if (!response.ok || body?.ok !== true) throw new Error("RPC failed");
+    return body.result;
+  }
+
+  function onHostChange(event: Event): void {
+    hostId = (event.currentTarget as HTMLSelectElement).value;
+    requestEpoch++;
+    balanceController.abort();
+    balanceController = new AbortController();
+    window.clearTimeout(timer);
+    state = null;
+    busy = false;
+    refreshPending = false;
+    rows.forEach(render);
+    onRefresh();
   }
 
   function onRefresh(): void { void refresh(); }
@@ -124,7 +173,15 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
   window.addEventListener("focus", onRefresh);
   window.addEventListener("online", onRefresh);
   document.addEventListener("visibilitychange", onRefresh);
-  onRefresh();
+  void rpc("listHosts", null, controller.signal).then((result) => {
+    if (disposed) return;
+    hosts = configurationContract.listHosts.output.parse(result);
+    rows.forEach(render);
+  }).catch(() => {
+    if (disposed) return;
+    hostsError = true;
+    rows.forEach(render);
+  });
 
   function dispose(): void {
     if (disposed) return;
@@ -140,6 +197,7 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
     signal.removeEventListener("abort", dispose);
     for (const row of rows.values()) {
       row.querySelector("button")!.removeEventListener("click", onRefresh);
+      row.querySelector("select")!.removeEventListener("change", onHostChange);
       row.remove();
     }
     rows.clear();

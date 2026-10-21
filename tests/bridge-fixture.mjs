@@ -156,7 +156,7 @@ export function jsonlChild(command, args, { cwd, env }) {
 
 export async function fixture(t, gatewayOptions = {}, { configured = true, settings = {}, closeHook = false, traceChildren = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "vrata-native-test-"));
-  const cwd = join(root, "workspace"), dataDir = join(root, "data"), home = join(root, "home");
+  const cwd = join(root, "workspace"), dataDir = join(root, "bridge-data"), home = join(root, "home");
   for (const path of [cwd, dataDir, home]) mkdirSync(path);
   const gateways = [], children = [];
   const gateway = await createGateway(gatewayOptions); gateways.push(gateway);

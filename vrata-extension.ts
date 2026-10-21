@@ -142,14 +142,14 @@ export default function vrataExtension(pi) {
       ...native,
       auth: {
         apiKey: {
-          name: "bb secret settings",
+          name: "Vrata machine credentials",
           check: async ({ signal }) => {
             signal.throwIfAborted();
-            return snapshot ? { type: "api_key", source: "bb secret settings" } : undefined;
+            return snapshot ? { type: "api_key", source: "Vrata machine credentials" } : undefined;
           },
           resolve: async ({ signal }) => {
             signal.throwIfAborted();
-            return snapshot ? { auth: { apiKey: snapshot.apiKey }, source: "bb secret settings" } : undefined;
+            return snapshot ? { auth: { apiKey: snapshot.apiKey }, source: "Vrata machine credentials" } : undefined;
           },
         },
       },

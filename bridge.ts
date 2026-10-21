@@ -484,7 +484,7 @@ async function handleProviderHealth(id: string | number, _params: { cwd?: string
   await requireRuntime();
   const config = readConfig(requireDataDir());
   let status: "ready" | "unauthenticated" | "unknown" = "unauthenticated";
-  let statusMessage: string | null = "Добавьте ключ Врата AI";
+  let statusMessage: string | null = "Добавьте ключ Врата AI на этой машине";
   if (config) {
     try {
       const models = await fetchModels(config);
@@ -753,7 +753,7 @@ async function completeSetup(params: TurnStartParams, pending: PendingConstructi
       }
     }
     let config = readConfig(requireDataDir());
-    if (!config) throw new SetupError("Добавьте ключ Врата AI в настройках плагина");
+    if (!config) throw new SetupError("Добавьте ключ Врата AI для машины треда в настройках плагина");
     let model = normalizeModel(params.options.model) ?? pending.params.model;
     let thinking = params.options.model === "vrata-setup" ? pending.params.thinkingLevel
       : buildPiTurnOptions(params.options).thinkingLevel ?? pending.params.thinkingLevel;
@@ -768,7 +768,7 @@ async function completeSetup(params: TurnStartParams, pending: PendingConstructi
       model = normalizeModel(selected.data.value.modelId);
       thinking = selected.data.value.reasoningLevel === "none" ? "off" : selected.data.value.reasoningLevel;
     }
-    // A settings change during either form must affect the configuration used to launch Pi.
+    // A local credential change during either form must affect the configuration used to launch Pi.
     config = readConfig(requireDataDir());
     if (!config) throw new SetupError("Ключ Врата AI удалён. Повторите настройку.");
     if (model) {

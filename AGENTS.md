@@ -25,9 +25,10 @@ provides direct entry prompts.
 - Keep bb and Plugin SDK APIs compatible with `engines.bb` and
   `engines.bbPluginSdk`. Preserve the provider bridge protocol and capabilities.
 - Keep Pi embedded in the plugin; do not require a separately installed agent CLI.
-- Store API keys in bb secret settings. Runtime configuration files containing
-  keys must retain `0600` permissions. Keep credentials out of thread history,
-  notifications, logs and git.
+- Store API keys and API URLs locally on the execution host, in the plugin's
+  atomic `credentials.json` with `0600` permissions. Do not persist credentials
+  in server settings or synchronize them to other hosts. Keep keys out of
+  thread history, notifications, logs and git.
 - Preserve session cancellation, rejection of late results, atomic session
   persistence and restoration of model and reasoning selections.
 - Preserve the configurable API base URL. Model discovery and key validation
@@ -60,7 +61,7 @@ results in the final response. Never push agent changes directly to `main`.
 
 Review the whole PR diff and run the relevant bb integration checks when
 changing provider registration, the manifest, packaging, the bridge protocol or
-secret settings. Report which checks actually ran and any platform limitations.
+credential storage. Report which checks actually ran and any platform limitations.
 Keep user edits intact and update the existing PR when requested; do not merge
 or publish a release without an explicit request.
 

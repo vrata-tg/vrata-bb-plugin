@@ -1,6 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { join } from "node:path";
+import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
+import host from "../dist/host.js";
 import { fixture, models, sleep } from "./bridge-fixture.mjs";
+
+async function saveLocalCredentials(t, f) {
+  const harness = experimental_createHostEntryHarness(host, {
+    experimental_paths: { dataDir: join(f.root, "host-data"), tempDir: join(f.root, "temp") },
+  });
+  t.after(() => harness.experimental_dispose());
+  const metadata = await harness.experimental_call("saveCredentials", { apiKey: "synthetic-key-a", baseUrl: f.gateway.url });
+  assert.equal(metadata.configured, true);
+  assert.equal(JSON.stringify(metadata).includes("synthetic-key-a"), false);
+  assert.ok(f.gateway.catalogRequests.length > 0, "Save validates on the execution host");
+  assert.equal(f.gateway.requests.length, 0, "Credential validation cannot generate a response");
+}
 
 test("native public catalog routes bare IDs through the registered Vrata provider", async (t) => {
   const f = await fixture(t, {}, { traceChildren: true });
@@ -24,7 +39,7 @@ test("first caller flow acknowledges start and turn before key/model forms, prom
   const turn = await f.turn("Original setup input", { model: "vrata-setup" });
   const key = await f.interaction("vrata/api-key");
   assert.ok(f.messages.findIndex((m) => m.id === turn.id) < f.messages.indexOf(key));
-  f.configure();
+  await saveLocalCredentials(t, f);
   f.reply(key.id, { kind: "request_answer", value: { configured: true } });
   const model = await f.interaction("vrata/model");
   const choices = model.params.payload.data.models;
@@ -45,7 +60,7 @@ test("Stop during onboarding rejects a late form reply without starting Pi gener
   const stopped = await f.stop();
   const terminal = f.records().find(({ event }) => event.type === "turn/completed" && event.status === "interrupted");
   assert.ok(terminal && terminal.logIndex < f.messages.findIndex((m) => m.id === stopped.id));
-  f.configure();
+  await saveLocalCredentials(t, f);
   const count = f.messages.length;
   f.reply(key.id, { kind: "request_answer", value: { configured: true } });
   await f.rpc("provider/health", { providerId: "vrata", cwd: f.cwd });
