@@ -37,7 +37,7 @@ export async function fetchBalance(apiUrl: string, apiKey: string, signal?: Abor
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
     });
     if (response.status === 401 || response.status === 403) {
-      return { status: "error", message: "Проверьте ключ API Врата AI в настройках плагина." };
+      return { status: "error", message: "Проверьте ключ Врата AI для выбранной машины в настройках плагина." };
     }
     if (!response.ok) return { status: "error", message: "Не удалось получить баланс Врата AI. Повторите попытку." };
     const account = accountSchema.parse(await response.json());

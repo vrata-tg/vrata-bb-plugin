@@ -1,7 +1,5 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { accountContract, credentialsContract, DEFAULT_BASE_URL, setupContract } from "./contract.js";
-import { apiBaseUrl, fetchModels } from "./vrata.js";
-import { fetchBalance } from "./balance.js";
+import { accountContract, configurationContract, credentialsContract, type ConfigurationTarget } from "./contract.js";
 import { registerBalanceEvents } from "./balance-events.js";
 
 const setupModel = {
@@ -16,76 +14,85 @@ const setupModel = {
 };
 
 export default function plugin(bb: BbPluginApi): void {
-  const settings = bb.settings.define({
-    apiKey: { type: "string", label: "Ключ API Врата AI", secret: true },
-    baseUrl: { type: "string", label: "Адрес API", default: DEFAULT_BASE_URL },
-  });
   const host = bb.hosts.experimental_client({ contract: credentialsContract });
-  let disposed = false;
-  let requested = false;
-  let syncTask: Promise<boolean> | undefined;
+  const controller = new AbortController();
+  const signal = controller.signal;
+  bb.onDispose(() => controller.abort());
+  const notify = registerBalanceEvents(bb);
 
-  function sync(): Promise<boolean> {
-    requested = true;
-    if (syncTask) return syncTask;
-    syncTask = (async () => {
-      let succeeded = false;
-      while (requested && !disposed) {
-        requested = false;
-        const values = await settings.get();
-        const hosts = await bb.sdk.hosts.list();
-        const results = await Promise.allSettled(hosts.map((machine) => host.call("sync", {
-          apiKey: values.apiKey ?? "",
-          baseUrl: values.baseUrl,
-        }, { hostId: machine.id })));
-        succeeded = results.some((result) => result.status === "fulfilled");
-        for (const result of results) {
-          if (result.status === "rejected") bb.log.warn(`Could not synchronize a Врата AI machine: ${String(result.reason)}`);
-        }
+  async function resolveTarget(target: ConfigurationTarget) {
+    signal.throwIfAborted();
+    let hostId: string;
+    if (target.kind === "thread") {
+      const thread = await bb.sdk.threads.get({ threadId: target.threadId, signal });
+      if (!thread.environmentId) throw new Error("Thread has no environment");
+      const environment = await bb.sdk.environments.get({ environmentId: thread.environmentId, signal });
+      hostId = environment.hostId;
+    } else {
+      hostId = target.hostId;
+    }
+    const machine = await bb.sdk.hosts.get({ hostId, signal });
+    signal.throwIfAborted();
+    return machine;
+  }
+
+  bb.rpc.register(configurationContract, {
+    async listHosts() {
+      try {
+        const machines = await bb.sdk.hosts.list({ signal });
+        signal.throwIfAborted();
+        return machines.map(({ id, name, status }) => ({ id, name, status }));
+      } catch {
+        throw new Error("Не удалось получить список машин BB. Повторите попытку.");
       }
-      return succeeded;
-    })().finally(() => { syncTask = undefined; });
-    return syncTask;
-  }
-
-  function backgroundSync(): void {
-    void sync().catch((error) => bb.log.warn(`Could not synchronize Врата AI configuration: ${String(error)}`));
-  }
-  settings.onChange(() => { backgroundSync(); refreshProvider(); });
-  bb.background.service("credentials", {
-    start(signal) {
-      backgroundSync();
-      const timer = setInterval(backgroundSync, 30_000);
-      return new Promise<void>((resolve) => {
-        signal.addEventListener("abort", () => { clearInterval(timer); resolve(); }, { once: true });
-      });
+    },
+    async getConfiguration({ target }) {
+      try {
+        const machine = await resolveTarget(target);
+        const config = await host.call("getConfiguration", null, { hostId: machine.id, signal });
+        signal.throwIfAborted();
+        return { hostId: machine.id, hostName: machine.name, ...config };
+      } catch {
+        throw new Error("Не удалось прочитать настройки Врата AI на выбранной машине. Проверьте подключение.");
+      }
+    },
+    async saveCredentials({ target, apiKey, baseUrl }) {
+      try {
+        const machine = await resolveTarget(target);
+        const config = await host.call("saveCredentials", { apiKey, baseUrl }, { hostId: machine.id, signal });
+        signal.throwIfAborted();
+        if (!config.configured) throw new Error("Host did not confirm configuration");
+        refreshProvider();
+        notify();
+        return { hostId: machine.id, hostName: machine.name, ...config };
+      } catch {
+        throw new Error("Не удалось проверить и сохранить ключ Врата AI на выбранной машине. Проверьте подключение, ключ и адрес API.");
+      }
+    },
+    async deleteCredentials({ hostId }) {
+      try {
+        const machine = await resolveTarget({ kind: "host", hostId });
+        const config = await host.call("deleteCredentials", null, { hostId: machine.id, signal });
+        signal.throwIfAborted();
+        refreshProvider();
+        notify();
+        return { hostId: machine.id, hostName: machine.name, ...config };
+      } catch {
+        throw new Error("Не удалось удалить ключ Врата AI на выбранной машине. Проверьте подключение.");
+      }
     },
   });
-  bb.onDispose(() => { disposed = true; });
 
-  const balanceController = new AbortController();
-  registerBalanceEvents(bb);
-  bb.onDispose(() => balanceController.abort());
   bb.rpc.register(accountContract, {
-    async balance() {
-      const { apiKey, baseUrl } = await settings.get();
-      if (!apiKey?.trim()) return { status: "unconfigured" as const };
-      return fetchBalance(apiBaseUrl(baseUrl), apiKey, balanceController.signal);
-    },
-  });
-
-  bb.rpc.register(setupContract, {
-    async validateKey({ apiKey }) {
-      const { baseUrl } = await settings.get();
-      const models = await fetchModels({ apiKey, baseUrl });
-      if (models.length === 0) throw new Error("Для этого ключа нет доступных моделей Врата AI");
-      return { valid: true as const };
-    },
-    async waitForKey() {
-      const { apiKey } = await settings.get();
-      if (!apiKey) throw new Error("Ключ Врата AI не сохранён");
-      if (!await sync()) throw new Error("Не удалось передать ключ на машину с тредом. Повторите попытку.");
-      return { configured: true as const };
+    async balance({ hostId }) {
+      try {
+        const machine = await resolveTarget({ kind: "host", hostId });
+        const balance = await host.call("balance", null, { hostId: machine.id, signal });
+        signal.throwIfAborted();
+        return balance;
+      } catch {
+        return { status: "error" as const, message: "Баланс Врата AI на выбранной машине временно недоступен. Проверьте подключение." };
+      }
     },
   });
 
@@ -101,12 +108,17 @@ export default function plugin(bb: BbPluginApi): void {
       brandPrefix: "Врата AI ",
     },
     maintenance: { health: true, usage: false, installation: false },
+    experimental_nativeSkillRoots: {
+      user: [".agents/skills"],
+      project: [".pi/skills", ".agents/skills"],
+    },
+    experimental_resolvesNativeRoots: true,
     composerActions: [],
     capabilities: {
       supportsServiceTier: false,
       supportsNativeUserQuestion: false,
-      fork: "none",
-      supportsManualCompaction: false,
+      fork: "checkpoint",
+      supportsManualCompaction: true,
       supportsThreadArchive: false,
       supportsThreadRename: false,
       permissionModes: ["full"],

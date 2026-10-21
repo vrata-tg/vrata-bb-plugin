@@ -137,8 +137,8 @@ works:
 
 Fix root causes at the shared seam. Do not add speculative abstractions,
 interfaces with one implementation, future config, generic frameworks,
-fallbacks or compatibility shims. Preserve trust-boundary validation, bb secret
-settings and runtime configuration permissions, session cancellation, atomic
+fallbacks or compatibility shims. Preserve trust-boundary validation, host-local
+credentials and runtime configuration permissions, session cancellation, atomic
 session persistence, credential redaction, accessibility and compatibility with
 the minimum supported bb and Plugin SDK APIs.
 
@@ -241,7 +241,7 @@ git diff --check
 ```
 
 Use Node.js 22. Check the affected server, app, host and bridge integration when
-changing provider registration, the manifest, packaging or secret settings.
+changing provider registration, the manifest, packaging or credential storage.
 Verify the plugin build bundles the runtime dependencies and entrypoints.
 Report any live bb checks that could not run. Do not repeat successful checks
 without relevant changes, failures or new evidence; configured CI still owns

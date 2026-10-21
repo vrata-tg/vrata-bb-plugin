@@ -1,7 +1,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 
 /** Content scripts receive invalidations over a plugin-owned, local-auth SSE route. */
-export function registerBalanceEvents(bb: BbPluginApi): void {
+export function registerBalanceEvents(bb: BbPluginApi): () => void {
   const clients = new Set<{ send: () => void; close: () => void }>();
   let disposed = false;
 
@@ -55,4 +55,5 @@ export function registerBalanceEvents(bb: BbPluginApi): void {
     disposed = true;
     for (const client of clients) client.close();
   });
+  return notify;
 }

@@ -2,7 +2,12 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": false,
+    "rootDir": ".",
     "outDir": "./dist/tests"
   },
-  "include": ["balance.ts", "balance-footer.ts", "balance-events.ts"]
+  "include": [
+    "*.ts",
+    "*.tsx",
+    "pi/**/*.ts"
+  ]
 }

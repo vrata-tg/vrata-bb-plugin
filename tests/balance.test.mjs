@@ -22,7 +22,7 @@ test("ruble formatting preserves large integers and rounds at the kopeck boundar
   assert.equal(formatRubles("900719925474099312345000"), "900\u00a0719\u00a0925\u00a0474\u00a0099\u00a0312,35 ₽");
 });
 
-test("account API authenticates server-side, parses atoms, and hides upstream errors", async (t) => {
+test("account API authenticates on the host, parses atoms, and hides upstream errors", async (t) => {
   let status = 200;
   let payload = account;
   const server = createServer((request, response) => {
@@ -61,7 +61,10 @@ async function settle() {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
-function client(t, fetcher) {
+function client(t, fetcher, { hosts = [
+  { id: "host-a", name: "Machine A", status: "connected" },
+  { id: "host-b", name: "Machine B", status: "connected" },
+], getConfiguration = () => ({ configured: true, baseUrl: "https://api.vrata.tg" }) } = {}) {
   const dom = new JSDOM('<body><aside><div data-sidebar="footer"><a>Settings</a></div></aside></body>', { pretendToBeVisual: true });
   const originals = new Map();
   const timers = new Map();
@@ -82,7 +85,19 @@ function client(t, fetcher) {
   const values = {
     window: dom.window, document: dom.window.document,
     navigator: dom.window.navigator, MutationObserver: dom.window.MutationObserver,
-    fetch: fetcher,
+    fetch: (url, options) => {
+      if (url.endsWith("/listHosts")) {
+        assert.equal(options.body, "null");
+        return Promise.resolve(rpcResponse(hosts));
+      }
+      if (url.endsWith("/getConfiguration")) {
+        const { target } = JSON.parse(options.body);
+        assert.equal(target.kind, "host");
+        return Promise.resolve(getConfiguration(target.hostId, options.signal)).then((configuration) =>
+          rpcResponse({ hostId: target.hostId, hostName: hosts.find((host) => host.id === target.hostId).name, ...configuration }));
+      }
+      return fetcher(url, options);
+    },
     EventSource: FakeEventSource,
   };
   for (const [key, value] of Object.entries(values)) {
@@ -99,10 +114,101 @@ function client(t, fetcher) {
       else delete globalThis[key];
     }
   });
-  return { dom, controller, dispose, timers, sources, document: dom.window.document };
+  return { dom, controller, dispose, timers, sources, document: dom.window.document, select(hostId) {
+    const selector = dom.window.document.querySelector("[data-vrata-balance] select");
+    selector.value = hostId;
+    selector.dispatchEvent(new dom.window.Event("change"));
+  } };
+
 }
 
 const rpcResponse = (result) => new Response(JSON.stringify({ ok: true, result }), { headers: { "content-type": "application/json" } });
+
+test("footer automatically finds a connected machine with a key", async (t) => {
+  for (const first of ["disconnected", "unconfigured", "unavailable", "configured"]) {
+    await t.test(first, async (t) => {
+      const configurations = [];
+      const balances = [];
+      const ui = client(t, async (_url, options) => {
+        balances.push(JSON.parse(options.body).hostId);
+        return rpcResponse(balance);
+      }, {
+        hosts: [
+          { id: "host-a", name: "Machine A", status: first === "disconnected" ? "disconnected" : "connected" },
+          { id: "host-b", name: "Machine B", status: "connected" },
+        ],
+        getConfiguration(hostId) {
+          configurations.push(hostId);
+          if (hostId === "host-a" && first === "unavailable") throw new Error("Host disconnected during discovery");
+          return { configured: hostId === "host-b" || first === "configured", baseUrl: "https://api.vrata.tg" };
+        },
+      });
+      await settle();
+      const expected = first === "configured" ? "host-a" : "host-b";
+      assert.deepEqual(balances, [expected]);
+      assert.deepEqual(configurations, first === "disconnected" ? ["host-b"] : first === "configured" ? ["host-a"] : ["host-a", "host-b"]);
+      const row = ui.document.querySelector("[data-vrata-balance]");
+      assert.equal(row.querySelector("select").value, expected);
+      assert.equal(row.querySelector("select").hidden, false);
+      assert.match(row.querySelector("button").textContent, /1,50 ₽/);
+    });
+  }
+});
+
+test("a single machine loads its balance without a picker", async (t) => {
+  const ui = client(t, async (_url, options) => {
+    assert.deepEqual(JSON.parse(options.body), { hostId: "host-a" });
+    return rpcResponse(balance);
+  }, { hosts: [{ id: "host-a", name: "Machine A", status: "connected" }] });
+  await settle();
+  const row = ui.document.querySelector("[data-vrata-balance]");
+  assert.equal(row.querySelector("select").hidden, true);
+  assert.match(row.querySelector("button").textContent, /1,50 ₽/);
+  assert.match(row.querySelector("button").getAttribute("aria-label"), /Machine A/);
+});
+
+test("no configured key or connected machines produces an actionable status", async (t) => {
+  for (const connected of [true, false]) {
+    await t.test(connected ? "key missing" : "machine offline", async (t) => {
+      let calls = 0;
+      const ui = client(t, async () => { calls++; return rpcResponse({ status: "unconfigured" }); }, {
+        hosts: [{ id: "host-a", name: "Machine A", status: connected ? "connected" : "disconnected" }],
+        getConfiguration: () => ({ configured: false, baseUrl: "https://api.vrata.tg" }),
+      });
+      await settle();
+      assert.equal(calls, connected ? 1 : 0);
+      const button = ui.document.querySelector("[data-vrata-balance] button");
+      assert.match(button.textContent, connected ? /Ключ не настроен/ : /Нет подключённых машин/);
+      assert.equal(button.disabled, !connected);
+    });
+  }
+});
+
+test("manual selection and disposal cancel discovery and reject its late result", async (t) => {
+  for (const action of ["select", "dispose"]) {
+    await t.test(action, async (t) => {
+      let finish;
+      let discoverySignal;
+      const pending = new Promise((resolve) => { finish = resolve; });
+      const calls = [];
+      const ui = client(t, async (_url, options) => {
+        calls.push(JSON.parse(options.body).hostId);
+        return rpcResponse(balance);
+      }, { getConfiguration(_hostId, signal) { discoverySignal = signal; return pending; } });
+      await settle();
+      assert.deepEqual(calls, []);
+      if (action === "select") ui.select("host-b");
+      else ui.dispose();
+      assert.equal(discoverySignal.aborted, true);
+      finish({ configured: true, baseUrl: "https://api.vrata.tg" });
+      await settle();
+      assert.deepEqual(calls, action === "select" ? ["host-b"] : []);
+      const row = ui.document.querySelector("[data-vrata-balance]");
+      if (action === "select") assert.equal(row.querySelector("select").value, "host-b");
+      else assert.equal(row, null);
+    });
+  }
+});
 
 test("footer mounts in the lower sidebar, refreshes, follows remounts and cleans up", async (t) => {
   let calls = 0;
@@ -110,15 +216,17 @@ test("footer mounts in the lower sidebar, refreshes, follows remounts and cleans
   const ui = client(t, async (url, options) => {
     calls++;
     assert.equal(url, "/api/v1/plugins/vrata/rpc/balance");
-    assert.equal(options.body, "null");
+    assert.deepEqual(JSON.parse(options.body), { hostId: "host-a" });
     assert.equal(options.headers.authorization, undefined);
     return rpcResponse(nextResult);
   });
   await settle();
+  assert.equal(calls, 1);
   let row = ui.document.querySelector("[data-vrata-balance]");
   assert.equal(row.parentElement.firstElementChild, row);
   assert.equal(row.dataset.bbPlugin, "vrata");
-  assert.equal(row.textContent, "Врата AI1,50 ₽Пополнить");
+  assert.equal(row.querySelector("button").textContent, "Врата AI1,50 ₽");
+  assert.equal(row.querySelector("select").selectedOptions[0].textContent, "Machine A");
   assert.match(row.querySelector("button").title, /Всего \(включая резерв\): 1,50 ₽/);
   assert.match(row.querySelector("button").title, /Доступно: 1,30 ₽/);
   assert.match(row.querySelector("button").title, /Бонусы: 0,30 ₽/);
@@ -169,12 +277,14 @@ test("footer mounts in the lower sidebar, refreshes, follows remounts and cleans
   assert.equal(ui.document.querySelector("[data-vrata-balance]"), null);
 });
 
-test("missing key hides the footer; failures replace the old balance and can recover", async (t) => {
+test("missing key keeps the machine picker visible; failures replace the old balance and can recover", async (t) => {
   let nextResult = { status: "unconfigured" };
   const ui = client(t, async () => rpcResponse(nextResult));
   await settle();
   const row = ui.document.querySelector("[data-vrata-balance]");
-  assert.equal(row.hidden, true);
+  assert.equal(row.hidden, false);
+  assert.match(row.querySelector("button").textContent, /Ключ не настроен/);
+  assert.equal(row.querySelector("select").value, "host-a");
   nextResult = balance;
   [...ui.timers.values()][0].callback();
   await settle();
@@ -183,12 +293,12 @@ test("missing key hides the footer; failures replace the old balance and can rec
   nextResult = { status: "error", message: "Проверьте ключ API" };
   row.querySelector("button").click();
   await settle();
-  assert.equal(row.textContent, "Врата AIБаланс недоступенПополнить");
+  assert.equal(row.querySelector("button").textContent, "Врата AIБаланс недоступен");
   assert.match(row.querySelector("button").title, /Проверьте ключ API/);
   nextResult = { status: "ok", spendable: "bad-data" };
   row.querySelector("button").click();
   await settle();
-  assert.equal(row.textContent, "Врата AIБаланс недоступенПополнить");
+  assert.equal(row.querySelector("button").textContent, "Врата AIБаланс недоступен");
   nextResult = balance;
   row.querySelector("button").click();
   await settle();
@@ -206,6 +316,7 @@ test("overlapping refreshes are coalesced and disposal aborts an in-flight reque
     await pending;
     return rpcResponse(balance);
   });
+  await settle();
   ui.dom.window.dispatchEvent(new ui.dom.window.Event("focus"));
   ui.sources[0].refresh();
   assert.equal(calls, 1);
@@ -242,6 +353,7 @@ test("a request completed during a balance fetch queues a fresh read instead of 
     if (calls === 1) { await pending; return rpcResponse(balance); }
     return rpcResponse({ ...balance, spendable: "1200000" });
   });
+  await settle();
   ui.sources[0].refresh();
   ui.sources[0].refresh();
   assert.equal(calls, 1);
@@ -256,7 +368,7 @@ test("backend signals only Vrata completions and failures; disconnect and reload
   const handlers = new Map();
   let route;
   let dispose;
-  registerBalanceEvents({
+  const notify = registerBalanceEvents({
     events: { on: (event, handler) => handlers.set(event, handler) },
     http: { route: (method, path, handler) => {
       assert.equal(method, "GET"); assert.equal(path, "/balance-events"); route = handler;
@@ -280,6 +392,8 @@ test("backend signals only Vrata completions and failures; disconnect and reload
   assert.equal(decoder.decode((await next).value), "data: refresh\n\n");
   handlers.get("thread.failed")({ thread: { providerId: "vrata" } });
   assert.equal(decoder.decode((await reader.read()).value), "data: refresh\n\n");
+  notify();
+  assert.equal(decoder.decode((await reader.read()).value), "data: refresh\n\n");
   controller.abort();
   assert.equal((await reader.read()).done, true);
   const cancelled = route({ req: { raw: new Request("http://bb.test") } });
@@ -289,4 +403,40 @@ test("backend signals only Vrata completions and failures; disconnect and reload
   await reconnected.read();
   dispose();
   assert.equal((await reconnected.read()).done, true);
+});
+
+
+test("switching footer hosts aborts the old fetch and ignores its late balance and completion", async (t) => {
+  const requests = [];
+  const ui = client(t, (url, options) => new Promise((resolve, reject) => {
+    requests.push({ hostId: JSON.parse(options.body).hostId, signal: options.signal, resolve, reject });
+  }));
+  await settle();
+  assert.equal(requests[0].hostId, "host-a");
+  ui.sources[0].refresh(); // pending refresh for A must not transfer to B.
+  ui.select("host-b");
+  assert.equal(requests[0].signal.aborted, true);
+  assert.equal(requests[1].hostId, "host-b");
+  const row = ui.document.querySelector("[data-vrata-balance]");
+  assert.equal(row.querySelector("select").selectedOptions[0].textContent, "Machine B");
+  requests[0].resolve(rpcResponse({ ...balance, spendable: "9900000" }));
+  await settle();
+  assert.equal(row.querySelector("button").disabled, true);
+  assert.equal(ui.timers.size, 0);
+  assert.equal(row.textContent.includes("10,10 ₽"), false);
+  requests[1].resolve(rpcResponse(balance));
+  await settle();
+  assert.match(row.querySelector("button").textContent, /1,50 ₽/);
+  assert.equal(requests.length, 2);
+  assert.equal(ui.sources.length, 1);
+  assert.equal(ui.timers.size, 1);
+  ui.select("host-a");
+  assert.equal(row.textContent.includes("1,50 ₽"), false);
+  ui.select("");
+  assert.equal(requests[2].signal.aborted, true);
+  requests[2].reject(new Error("late private failure"));
+  await settle();
+  assert.equal(row.querySelector("button").textContent, "Врата AIВыберите машину");
+  assert.equal(ui.timers.size, 0);
+  assert.equal(requests.length, 3);
 });
