@@ -26,8 +26,14 @@ async function nativeRuntimeProbe(t) {
   const results = await Promise.all(Array.from({ length: 4 }, () => ensureEmbeddedPi(join(root, "data"))));
   for (const runtime of results) assert.deepEqual(runtime, results[0]);
   assert.equal(readdirSync(join(root, "data/pi-runtime")).length, 1, "Atomic publish must leave only the completed capsule");
-  assert.deepEqual(await ensureEmbeddedPi(join(root, "data")), results[0]);
   const { default: asset } = await import("../dist/tests/pi-runtime-asset.js");
+  const descriptor = Object.getOwnPropertyDescriptor(asset, "files");
+  try {
+    Object.defineProperty(asset, "files", { get() { throw new Error("A cache hit must not unpack the archive"); } });
+    assert.deepEqual(await ensureEmbeddedPi(join(root, "data")), results[0]);
+  } finally {
+    Object.defineProperty(asset, "files", descriptor);
+  }
   const bytes = Object.values(asset.files)[0];
   const original = bytes[0];
   try {
@@ -136,11 +142,11 @@ export default function (pi) {
   }
 }
 
-async function probe(cleanup) {
+async function probe(cleanup, pluginRoot = fileURLToPath(new URL("../", import.meta.url))) {
   const root = mkdtempSync(join(tmpdir(), "vrata-packaged-host-"));
   const previousCwd = process.cwd();
-  const hostFile = new URL("../dist/host.js", import.meta.url);
-  const metadata = JSON.parse(readFileSync(new URL("../dist/host.meta.json", import.meta.url), "utf8"));
+  const hostFile = join(pluginRoot, "dist/host.js");
+  const metadata = JSON.parse(readFileSync(join(pluginRoot, "dist/host.meta.json"), "utf8"));
   assert.equal(createHash("sha256").update(readFileSync(hostFile)).digest("hex"), metadata.artifactDigest);
   copyFileSync(hostFile, join(root, "host.mjs"));
   mkdirSync(join(root, "data"));
@@ -245,7 +251,7 @@ async function probe(cleanup) {
 if (process.argv[2] === "--probe") {
   const cleanup = [];
   try {
-    await probe(cleanup);
+    await probe(cleanup, process.argv[3]);
   } finally {
     for (const dispose of cleanup.reverse()) await dispose();
   }
@@ -256,5 +262,41 @@ if (process.argv[2] === "--probe") {
     // SDK's harness owns stdout. Keep the test runner's TAP/IPC outside its process.
     const { NODE_TEST_CONTEXT: _testContext, ...env } = process.env;
     await promisify(execFile)(process.execPath, [fileURLToPath(import.meta.url), "--probe"], { env, timeout: 60000 });
+  });
+  test("npm package installs without build dependencies and runs its shipped host and server", async (t) => {
+    const root = mkdtempSync(join(tmpdir(), "vrata-npm-package-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const exec = promisify(execFile);
+    const { NODE_TEST_CONTEXT: _testContext, ...env } = process.env;
+    // The suite follows npm run build; prepack itself is verified by the release preparation.
+    const { stdout } = await exec("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", root], {
+      cwd: fileURLToPath(new URL("../", import.meta.url)), env,
+    });
+    const [pack] = JSON.parse(stdout);
+    assert.ok(pack.files.every(({ path }) => !/^(tests|scripts|node_modules)\//.test(path)
+      && !path.endsWith(".map") && !path.endsWith(".br") && !path.startsWith("dist/tests/")),
+    "The published package must not duplicate runtime assets or ship development output");
+    await exec("npm", ["install", "--prefix", root, "--ignore-scripts", "--omit=dev", "--omit=optional",
+      "--no-audit", "--no-fund", join(root, pack.filename)], { env, timeout: 60000 });
+    const installed = join(root, "node_modules", pack.name);
+    const manifest = JSON.parse(readFileSync(join(installed, "package.json"), "utf8"));
+    for (const artifact of ["host", "server", "app"]) {
+      assert.ok(existsSync(join(installed, manifest.bb[artifact])), `Missing ${artifact} entry`);
+      assert.ok(existsSync(join(installed, "dist", `${artifact}.js`)));
+      const meta = JSON.parse(readFileSync(join(installed, "dist", `${artifact}.meta.json`), "utf8"));
+      assert.equal(meta.pluginVersion, manifest.version);
+    }
+    assert.equal(existsSync(join(root, "node_modules/@earendil-works/pi-coding-agent")), false);
+    assert.equal(existsSync(join(root, "node_modules/esbuild")), false);
+    const { build } = await import("esbuild");
+    const fallback = join(installed, "server-fallback.mjs");
+    await build({ entryPoints: [join(installed, manifest.bb.server)], outfile: fallback,
+      bundle: true, platform: "node", format: "esm", packages: "external", target: "node22" });
+    for (const entry of [join(installed, "dist/server.js"), fallback]) {
+      await exec(process.execPath, ["--no-global-search-paths", "--input-type=module", "-e",
+        `import plugin from ${JSON.stringify(pathToFileURL(entry).href)}; if (typeof plugin !== 'function') throw Error('Invalid plugin entry');`],
+      { cwd: root, env, timeout: 30000 });
+    }
+    await exec(process.execPath, [fileURLToPath(import.meta.url), "--probe", installed], { env, timeout: 60000 });
   });
 }

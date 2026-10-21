@@ -5,8 +5,15 @@
 ## Установка
 
 ```bash
-bb plugin install git:https://github.com/v-lebedev/vrata-bb-plugin
+bb plugin install npm:bb-plugin-vrata
 ```
+
+Команда предназначена для опубликованного npm-релиза. Эта ветка готовит первую
+npm-поставку; до публикации используйте локальную сборку из раздела «Разработка».
+Пакет содержит готовые bundles и сжатый Pi. При первом запуске runtime
+распаковывается в приватный кеш машины; загрузка или установка Pi не требуется.
+Прямая managed-установка из Git больше не поддерживается: сборщик BB не запускает
+подготовку сжатого runtime.
 
 В новом треде выберите провайдер **Врата AI (Pi)**. Если ключ ещё не сохранён, выберите **Ввести ключ и выбрать модель** и отправьте запрос. В треде появятся форма для ключа и список доступных моделей. Выберите модель и уровень ризонинга; исходный запрос продолжится автоматически. Получить ключ можно через [бот Врата AI](https://vrata.tg/bot).
 
@@ -66,10 +73,30 @@ npm ci
 npm run typecheck
 npm run build
 npm test
+bb plugin install path:.
 ```
 
 Тесты используют синтетические ключи, loopback HTTP, публичный SDK harness и настоящий закреплённый Pi. Они проверяют локальное сохранение и изоляцию машин, onboarding целевого host, native bridge, историю и миграцию, отмену, tools, transport и retries. Отдельная проверка копирует только собранный `host.js` вне checkout и запускает встроенный runtime. Реальный ключ не нужен.
 
-Pi закреплён в npm dependencies. В Git хранится список byte imports, а штатная сборка bb включает файлы установленных пакетов в `host.js`. Архива runtime в исходниках нет. После изменения pinned зависимостей список и checksum обновляются командой `node scripts/vendor-pi-runtime.mjs`: генератор выполняет отдельный `npm ci` по lockfile и не меняет рабочие dependencies. Managed Git install не требует build hooks.
+Pi закреплён в devDependencies и включается в готовый `host.js`. `npm run build`
+сначала запускает `scripts/vendor-pi-runtime.mjs`: отдельный `npm ci` по lockfile,
+побайтная упаковка runtime и notices, Brotli-сжатие и checksum. Затем штатный
+сборщик BB встраивает архив в host. Рабочие dependencies генератор не меняет;
+архив и metadata игнорируются Git. Повторный запуск использует прежний кеш,
+если состав и содержимое runtime не изменились.
 
-`npm test` предварительно собирает общий runtime asset для тестов: import attribute `type: "bytes"` обрабатывается esbuild, а не самим Node.js. Полные тексты лицензий находятся в [packaging/pi/NOTICE.md](packaging/pi/NOTICE.md); одинаковые тексты хранятся один раз со ссылками из каждого package section. Интеграция с BB находится в `bridge.ts` и `pi/`: один Pi-процесс на сессию, прямые RPC-команды и перевод событий. Происхождение кода и лицензия — в [pi/NOTICE.md](pi/NOTICE.md).
+`npm pack` запускает build через `prepack` и создаёт готовый tarball. В него
+входят app/server/host с metadata, notices и исходники для проверки entrypoints
+и server fallback BB. Зависимости Pi, tests, source maps и отдельный runtime
+archive не публикуются. Перед выпуском выполняются проверки выше; публикация
+`npm publish` и release tag — отдельный шаг. Для ручной проверки уже собранного
+пакета без повторной сборки используйте `npm pack --ignore-scripts`.
+
+`npm test` после build собирает общий runtime asset для тестов: import attribute
+`type: "bytes"` обрабатывается esbuild, а не самим Node.js. Packaging-тест
+устанавливает tarball без scripts/dev dependencies в чистый каталог, проверяет
+server fallback и запускает фактический host вне checkout. Полные тексты лицензий
+находятся в [packaging/pi/NOTICE.md](packaging/pi/NOTICE.md); одинаковые тексты
+хранятся один раз со ссылками из каждого package section. Интеграция с BB
+находится в `bridge.ts` и `pi/`: один Pi-процесс на сессию, прямые RPC-команды и
+перевод событий. Происхождение кода и лицензия — в [pi/NOTICE.md](pi/NOTICE.md).

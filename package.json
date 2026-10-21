@@ -22,18 +22,19 @@
     "host": "./host.ts"
   },
   "scripts": {
-    "build": "bb plugin build",
+    "build": "node scripts/vendor-pi-runtime.mjs && bb plugin build",
     "typecheck": "tsc --noEmit",
-    "test": "tsc -p tsconfig.tests.json && node scripts/bundle-test-runtime.mjs && node --test --test-concurrency=1 tests/*.test.mjs"
+    "test": "tsc -p tsconfig.tests.json && node scripts/bundle-test-runtime.mjs && node --test --test-concurrency=1 tests/*.test.mjs",
+    "prepack": "npm run build"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "1.3.0",
-    "@earendil-works/pi-ai": "1.3.0",
-    "@earendil-works/pi-coding-agent": "1.3.0",
     "@get-bb/plugin-sdk": "0.4.34",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@earendil-works/pi-agent-core": "1.3.0",
+    "@earendil-works/pi-ai": "1.3.0",
+    "@earendil-works/pi-coding-agent": "1.3.0",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^22.0.0",
     "@types/react": "^19.3.0",
@@ -42,5 +43,19 @@
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "typescript": "^5.7.0"
-  }
+  },
+  "files": [
+    "dist/*.js",
+    "dist/*.css",
+    "dist/*.meta.json",
+    "*.ts",
+    "*.tsx",
+    "pi/*.ts",
+    "pi/LICENSE",
+    "pi/NOTICE.md",
+    "packaging/pi/LICENSE",
+    "packaging/pi/NOTICE.md",
+    "packaging/pi/license-sources.json",
+    "packaging/pi/provenance.json"
+  ]
 }
