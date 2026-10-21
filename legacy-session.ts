@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
 import type { Message } from "@earendil-works/pi-ai";
 import { z } from "zod";
-import { resolvePiSessionFilePath } from "./native-pi/bridge/session-paths.js";
+import { resolvePiSessionFilePath } from "./pi/session-paths.js";
 
 const snapshotSchema = z.object({
   messages: z.array(z.object({ role: z.enum(["user", "assistant", "toolResult"]) }).passthrough()),

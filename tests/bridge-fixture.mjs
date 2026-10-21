@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
 import { setTimeout as delay } from "node:timers/promises";
-import { experimental_resolveProviderBridgeLaunch } from "@get-bb/plugin-sdk/provider-bridge/testing";
+import { experimental_createBridgeDeltaEventCollector, experimental_resolveProviderBridgeLaunch } from "@get-bb/plugin-sdk/provider-bridge/testing";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 export const models = {
@@ -154,7 +154,7 @@ export function jsonlChild(command, args, { cwd, env }) {
   };
 }
 
-export async function fixture(t, gatewayOptions = {}, { configured = true, settings = {}, closeHook = false } = {}) {
+export async function fixture(t, gatewayOptions = {}, { configured = true, settings = {}, closeHook = false, traceChildren = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "vrata-native-test-"));
   const cwd = join(root, "workspace"), dataDir = join(root, "data"), home = join(root, "home");
   for (const path of [cwd, dataDir, home]) mkdirSync(path);
@@ -165,7 +165,7 @@ export async function fixture(t, gatewayOptions = {}, { configured = true, setti
     finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  let transport, current, turnCursor = 0, counter = 0;
+  let transport, current, collector, eventRecords, messageCursor, requestId, turnCursor = 0, counter = 0;
   const configure = (target = gateway, apiKey = "synthetic-key-a") => writeFileSync(join(dataDir, "credentials.json"), JSON.stringify({ apiKey, baseUrl: target.url }), { mode: 0o600 });
   if (configured) configure();
   const { preparePiRuntime } = await import("../dist/tests/pi-runtime.js");
@@ -175,7 +175,25 @@ export async function fixture(t, gatewayOptions = {}, { configured = true, setti
     writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), ...settings }), { mode: 0o600 });
   }
   const env = { PATH: process.env.PATH, HOME: home, TMPDIR: root, LANG: "C.UTF-8", PI_OFFLINE: "1", ...runtime.env };
+  const spawnLog = join(root, "spawned.jsonl");
+  if (traceChildren) {
+    const preload = join(root, "trace-children.cjs");
+    // Observe real launches without replacing the CLI or adding a product RPC.
+    writeFileSync(preload, `
+      const { ChildProcess } = require("node:child_process");
+      const { appendFileSync } = require("node:fs");
+      const original = ChildProcess.prototype.spawn;
+      ChildProcess.prototype.spawn = function(options) {
+        const result = original.call(this, options);
+        if (this.pid) appendFileSync(${JSON.stringify(spawnLog)}, JSON.stringify({ parent: process.pid, pid: this.pid }) + "\\n");
+        return result;
+      };
+    `);
+    env.NODE_OPTIONS = `--require=${preload}`;
+  }
   const launch = () => {
+    collector = experimental_createBridgeDeltaEventCollector("vrata");
+    eventRecords = []; messageCursor = 0; turnCursor = 0; requestId = undefined;
     const spec = experimental_resolveProviderBridgeLaunch({ modulePath: resolve("dist/host.js"), pluginId: "vrata", cwd, dataDir });
     // Only the explicit lifecycle probe needs a direct onClose hook. Ordinary
     // integration and conformance always use the SDK worker above.
@@ -205,6 +223,24 @@ export async function fixture(t, gatewayOptions = {}, { configured = true, setti
   const initialize = () => rpc("initialize", { client: { name: "native-fixture", version: "1" }, protocolVersion: 2 });
   await initialize();
   const deltas = (threadId = current?.threadId) => transport.messages.filter((m) => m.method === "thread/delta" && m.params.threadId === threadId).flatMap((m) => m.params.deltas);
+  const records = (threadId = current?.threadId) => {
+    while (messageCursor < transport.messages.length) {
+      const logIndex = messageCursor++;
+      const message = transport.messages[logIndex];
+      // SDK assembly leaves identity unstamped; the notification owns routing.
+      for (const event of collector.assembleMessage(message)) {
+        if (event.type === "turn/completed") assert.equal(eventRecords.some((record) => record.event.type === "turn/completed" && record.threadId === message.params.threadId && record.event.scope.turnId === event.scope.turnId), false, "A turn must reach one terminal state");
+        eventRecords.push({ event, logIndex, threadId: message.params.threadId });
+      }
+    }
+    return eventRecords.filter((record) => record.threadId === threadId);
+  };
+  const events = (threadId) => records(threadId).map(({ event }) => event);
+  const activeTurnId = () => {
+    records();
+    const bbTurnId = collector.assembler.getOpenTurnId(current.threadId);
+    return bbTurnId ? collector.assembler.getProviderTurnId(current.threadId, bbTurnId) ?? bbTurnId : null;
+  };
   const clientId = () => `creq_${(++counter).toString(16).replace(/0/g, "x").replace(/1/g, "y").padStart(10, "a")}`;
   const savedPath = (id = current.providerThreadId) => join(runtime.sessionDir, `${id.replace(/[^A-Za-z0-9._-]/g, "_")}.jsonl`);
   const readSession = (id) => {
@@ -213,7 +249,8 @@ export async function fixture(t, gatewayOptions = {}, { configured = true, setti
     return SessionManager.open(path);
   };
   return {
-    root, cwd, dataDir, runtime, gateway, configure, rpc, deltas, clientId, savedPath,
+    root, cwd, dataDir, runtime, gateway, configure, rpc, deltas, events, records, clientId, savedPath,
+    spawned() { return existsSync(spawnLog) ? readFileSync(spawnLog, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : []; },
     get current() { return current; }, get messages() { return transport.messages; }, get transport() { return transport; },
     saved(id) { return readSession(id).buildSessionContext(); },
     entries(id) { return readSession(id).getBranch(); },
@@ -223,26 +260,38 @@ export async function fixture(t, gatewayOptions = {}, { configured = true, setti
       const params = { threadId: "thr_fixture", cwd, instructionMode: "append", ...rest, options: { ...options, ...selected } };
       const { result } = await rpc("thread/start", params);
       current = { threadId: params.threadId, providerThreadId: result.providerThreadId };
-      turnCursor = deltas().length;
+      turnCursor = events().length;
       return current;
     },
     async resume(providerThreadId, selected = { model: "vrata-setup", reasoningLevel: undefined }) {
       current = { threadId: `thr_resumed_${++counter}`, providerThreadId };
       const result = await rpc("thread/resume", { ...current, cwd, instructionMode: "append", options: { ...options, ...selected } });
-      turnCursor = deltas().length;
+      turnCursor = events().length;
       return result;
     },
     async turn(text, selected = {}) {
-      turnCursor = deltas().length;
-      return rpc("turn/start", { ...current, input: typeof text === "string" ? textInput(text) : text, clientRequestId: clientId(), options: { ...options, ...selected } });
+      turnCursor = events().length;
+      requestId = clientId();
+      return rpc("turn/start", { ...current, input: typeof text === "string" ? textInput(text) : text, clientRequestId: requestId, options: { ...options, ...selected } });
     },
-    async steer(text) {
-      const id = clientId();
-      await rpc("turn/steer", { ...current, expectedTurnId: "turn-active", input: textInput(text), clientRequestId: id, options });
+    async steer(text, selected = {}, id = clientId()) {
+      const expectedTurnId = activeTurnId();
+      assert.ok(expectedTurnId, "Steer requires an actual active turn");
+      await rpc("turn/steer", { ...current, expectedTurnId, input: textInput(text), clientRequestId: id, options: { ...options, ...selected } });
       return id;
     },
-    stop(intent = "interrupt") { return rpc("thread/stop", { ...current, activeTurnId: intent === "release" ? null : "turn-active", intent }); },
-    async boundary() { return until(() => deltas().slice(turnCursor).find((d) => d.kind === "turn.boundary" && d.status && !d.providerCheckpointId), `terminal boundary: ${transport.stderr}`, 30000); },
+    stop(intent = "interrupt") { return rpc("thread/stop", { ...current, activeTurnId: intent === "release" ? null : activeTurnId(), intent }); },
+    async boundary() {
+      const expectedRequest = requestId, cursor = turnCursor;
+      return until(() => {
+        const recent = events().slice(cursor);
+        const accepted = recent.find((event) => event.type === "turn/input/accepted" && event.clientRequestId === expectedRequest);
+        if (!accepted) return undefined;
+        const completed = recent.filter((event) => event.type === "turn/completed" && event.scope.turnId === accepted.scope.turnId);
+        assert.ok(completed.length <= 1, "A request must reach one terminal state");
+        return completed[0];
+      }, `terminal event: ${transport.stderr}`, 30000);
+    },
     reply(id, result) { transport.send(JSON.stringify({ jsonrpc: "2.0", id, result })); },
     replyError(id, message) { transport.send(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message } })); },
     toolCall() { return until(() => transport.messages.find((m) => m.method === "item/tool/call"), "dynamic tool call"); },

@@ -18,7 +18,7 @@ test("packaged native bridge passes the canonical SDK conformance suite", async 
   });
   t.diagnostic(`SDK scenarios: ${report.results.filter((r) => r.status === "pass").length}/${report.results.length} passed`);
   assert.equal(report.passed, true, JSON.stringify(report.results, null, 2));
-  for (const id of ["session/fork-identity", "turn/settles-without-activity"]) {
+  for (const id of ["session/fork-identity", "turn/settles-without-activity", "stop/release-not-interrupted", "stop/interrupt-settles-before-result"]) {
     assert.equal(report.results.find((r) => r.id === id)?.status, "pass", JSON.stringify(report.results));
   }
   assert.equal(report.results.some((r) => r.status === "fail"), false);

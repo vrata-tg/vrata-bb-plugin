@@ -11,6 +11,13 @@ await build({
   format: "esm",
   target: "node22",
 });
+// SDK 0.4.34 includes CJS requires; use the same Node bundling boundary as BB.
+await build({
+  entryPoints: [fileURLToPath(new URL("../pi/events.ts", import.meta.url))],
+  outfile: fileURLToPath(new URL("pi-events.js", output)),
+  bundle: true, platform: "node", format: "esm", target: "node22",
+  banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
+});
 await writeFile(new URL("package.json", output), JSON.stringify({
   type: "module",
   imports: { "#vrata-pi-runtime": "./pi-runtime-asset.js" },

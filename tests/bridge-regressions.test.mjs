@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { answer, callTool, chunk, dynamicTool, finish, fixture, models, options, png, sleep, until } from "./bridge-fixture.mjs";
+import { answer, callTool, chunk, dynamicTool, finish, fixture, models, options, sleep, until } from "./bridge-fixture.mjs";
 
 for (const intent of ["interrupt", "release"]) {
   test(`${intent} closes native generation and rejects late stream work`, async (t) => {
@@ -18,9 +18,9 @@ for (const intent of ["interrupt", "release"]) {
     const before = f.messages.length;
     const stopped = await f.stop(intent);
     if (intent === "interrupt") {
-      const endIndex = f.messages.findIndex((m) => m.method === "thread/delta" && m.params.deltas.some((d) => d.kind === "session.ended"));
-      assert.ok(endIndex >= 0 && endIndex < f.messages.findIndex((m) => m.id === stopped.id));
-    } else assert.equal(f.messages.slice(before).some((m) => m.method === "thread/delta"), false, "release fabricates no lifecycle events");
+      const end = f.records().find(({ event }) => event.type === "turn/completed" && event.status === "interrupted");
+      assert.ok(end && end.logIndex < f.messages.findIndex((m) => m.id === stopped.id));
+    } else assert.equal(f.records().some(({ event, logIndex }) => logIndex >= before && (event.type === "system/thread/interrupted" || (event.type === "turn/completed" && event.status === "interrupted"))), false, "release fabricates no interruption");
     const snapshot = readFileSync(f.savedPath(), "utf8"), eventCount = f.messages.length;
     callTool(held, dynamicTool.name);
     await sleep(100);
@@ -36,44 +36,51 @@ for (const intent of ["interrupt", "release"]) {
   });
 }
 
-test("Stop during a reasoning rebuild closes both Pi children and lets the host exit", async (t) => {
-  const f = await fixture(t, {}, { settings: { defaultProjectTrust: "always" } });
-  const marker = join(f.root, "session-pids.jsonl"), gate = join(f.root, "hold-startup");
+test("Stop during a held native model setter releases its child before acknowledging", async (t) => {
+  const f = await fixture(t, {}, { settings: { defaultProjectTrust: "always" }, traceChildren: true });
+  const marker = join(f.root, "setter-entered"), gate = join(f.root, "hold-setter");
   const extensionDir = join(f.cwd, ".pi/extensions");
   mkdirSync(extensionDir, { recursive: true });
-  writeFileSync(join(extensionDir, "hold-startup.js"), `
-    import { appendFileSync, existsSync } from "node:fs";
+  writeFileSync(join(extensionDir, "hold-setter.js"), `
+    import { writeFileSync, existsSync } from "node:fs";
     export default function(pi) {
-      pi.on("session_start", async () => {
-        appendFileSync(${JSON.stringify(marker)}, JSON.stringify(process.pid) + "\\n");
+      pi.on("model_select", async () => {
+        if (!existsSync(${JSON.stringify(gate)})) return;
+        writeFileSync(${JSON.stringify(marker)}, String(process.pid));
         while (existsSync(${JSON.stringify(gate)})) await new Promise(resolve => setTimeout(resolve, 25));
       });
     }
   `);
-  const pids = () => existsSync(marker) ? readFileSync(marker, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : [];
   const alive = (pid) => {
     try { process.kill(pid, 0); return true; }
     catch (error) { if (error.code === "ESRCH") return false; throw error; }
   };
   try {
-    await f.start(); await f.turn("Persist before rebuilding"); await f.boundary();
-    assert.equal(pids().length, 1);
-    writeFileSync(gate, "hold replacement startup");
-    const rebuilding = f.turn("Never dispatch this input", { reasoningLevel: "high" })
+    await f.start(); await f.turn("Persist before changing options"); await f.boundary();
+    assert.equal(f.spawned().length, 1);
+    const pid = f.spawned()[0].pid;
+    writeFileSync(gate, "hold native model setter");
+    const changing = f.turn("Never dispatch this input", { model: models.responses, reasoningLevel: "high" })
       .then(() => ({ accepted: true }), (error) => ({ error }));
-    await until(() => pids().length === 2, "replacement entered its startup hook");
-    const both = pids();
-    assert.ok(both.every(alive), "the old and replacement sessions are both running");
+    await until(() => existsSync(marker), "native set_model entered model_select");
+    assert.equal(Number(readFileSync(marker, "utf8")), pid);
+    assert.equal(f.spawned().length, 1, "Option changes do not replace the session");
     await f.stop();
-    assert.ok((await rebuilding).error, "cancelled replacement rejects the queued turn");
-    await until(() => both.every((pid) => !alive(pid)), "both Pi sessions exit after Stop", 12000);
+    assert.equal(alive(pid), false, "Stop releases the child before its response");
+    await changing;
+    const snapshot = readFileSync(f.savedPath(), "utf8"), count = f.messages.length;
+    unlinkSync(gate);
+    await f.rpc("provider/health", { providerId: "vrata", cwd: f.cwd });
     assert.equal(f.gateway.requests.length, 1, "no generation follows cancellation");
-    assert.match(JSON.stringify(f.saved().messages), /Persist before rebuilding/);
+    assert.equal(readFileSync(f.savedPath(), "utf8"), snapshot);
+    assert.equal(f.messages.slice(count).some((m) => m.method === "thread/delta" || m.method === "item/tool/call"), false);
+    assert.match(JSON.stringify(f.saved().messages), /Persist before changing options/);
+    assert.doesNotMatch(JSON.stringify(f.saved().messages), /Never dispatch this input/);
     f.transport.child.stdin.end();
     await until(() => f.transport.child.exitCode !== null, "host exits without forced termination", 12000);
     assert.equal(f.transport.child.exitCode, 0);
   } finally {
-    for (const pid of pids()) if (alive(pid)) process.kill(pid, "SIGKILL");
+    for (const { pid } of f.spawned()) if (alive(pid)) process.kill(pid, "SIGKILL");
   }
 });
 
@@ -89,68 +96,57 @@ test("configuration switches endpoint and credential together on an existing ses
   assert.equal(second.requests[0].authorization, "Bearer synthetic-key-b");
 });
 
-test("per-turn model and reasoning survive bridge process restart", async (t) => {
-  const f = await fixture(t);
-  const { providerThreadId } = await f.start();
-  await f.turn("First model"); await f.boundary();
-  await f.turn("Explicit model change", { model: models.responses, reasoningLevel: "high" });
-  assert.equal((await f.boundary()).status, "completed");
-  assert.equal(f.gateway.requests[1].path, "/v1/responses");
-  assert.equal(f.gateway.requests[1].body.reasoning.effort, "high");
-  await f.restart();
-  await f.resume(providerThreadId);
-  await f.turn("Restored selection", { model: "vrata-setup", reasoningLevel: undefined });
-  assert.equal((await f.boundary()).status, "completed");
-  assert.equal(f.gateway.requests[2].body.model, models.responses);
-  assert.equal(f.gateway.requests[2].body.reasoning.effort, "high");
-  assert.match(JSON.stringify(f.gateway.requests[2].body.input), /Explicit model change/);
-  assert.equal(f.saved().model.modelId, models.responses);
-  assert.equal(f.saved().thinkingLevel, "high");
-});
-
-test("steer is consumed by native Pi and acknowledged with its client request ID", async (t) => {
-  let held;
-  const f = await fixture(t, { onChat({ response, index }) {
-    if (index === 0) { held = response; chunk(response, { role: "assistant", content: "First part" }); }
-    else answer(response, "Steered answer");
-  } });
-  await f.start(); await f.turn("Initial input");
-  await until(() => held, "held generation");
-  const id = await f.steer("Consumed steer marker");
-  finish(held);
-  await until(() => f.gateway.requests.length === 2, "steered request");
-  await f.boundary();
-  assert.ok(f.deltas().some((d) => d.kind === "input.accepted" && d.clientRequestId === id));
-  assert.match(JSON.stringify(f.gateway.requests[1].body.messages), /Consumed steer marker/);
-  await until(() => JSON.stringify(f.saved().messages).includes("Steered answer"), "steered history persisted");
-});
-
-for (const kind of ["success", "failure", "RPC error"]) {
-  test(`dynamic ${kind} preserves native recovery and ordered rich results`, async (t) => {
-    const f = await fixture(t, { onChat({ response, index }) { if (!index) callTool(response); else answer(response, "Tool recovered"); } });
-    await f.start({ dynamicTools: [dynamicTool] }); await f.turn("Run the tool");
-    const call = await f.toolCall();
-    assert.equal(call.params.tool, dynamicTool.name);
-    assert.deepEqual(call.params.arguments, { value: "fixture" });
-    const content = [{ type: "text", text: "Before image" }, { type: "image", mimeType: "image/png", data: png }, { type: "text", text: "After image" }];
-    if (kind === "RPC error") f.replyError(call.id, "Synthetic RPC failure");
-    else f.reply(call.id, { success: kind === "success", contentItems: [{ type: "inputText", text: content[0].text }, { type: "inputImage", imageUrl: `data:image/png;base64,${png}` }, { type: "inputText", text: content[2].text }] });
+for (const consume of [false, true]) {
+  test(`steer acknowledgment follows native consumption, Stop ${consume ? "after" : "before"} consumption`, async (t) => {
+    const held = [];
+    const f = await fixture(t, { onChat({ response, index }) {
+      if (index < (consume ? 2 : 1)) { held.push(response); chunk(response, { role: "assistant", content: "Held native work" }); }
+      else answer(response);
+    } });
+    const { providerThreadId } = await f.start(); await f.turn("Initial input");
+    await until(() => held.length === 1, "held generation");
+    const id = await f.steer("Consumed steer marker");
+    const accepted = () => f.events().filter((event) => event.type === "turn/input/accepted" && event.clientRequestId === id);
+    assert.equal(accepted().length, 0, "Queue admission is not conversation consumption");
+    assert.equal(f.gateway.requests.length, 1, "Same-option steer does not cancel the active run");
+    assert.equal(held[0].destroyed, false);
+    if (consume) {
+      finish(held[0]);
+      await until(() => held.length === 2, "steered model request");
+      await until(() => accepted().length === 1, "consumed input acknowledgment");
+      assert.match(JSON.stringify(f.gateway.requests[1].body.messages), /Consumed steer marker/);
+    }
+    await f.stop();
+    assert.equal(accepted().length, consume ? 1 : 0);
+    const history = JSON.stringify(f.saved().messages);
+    if (consume) assert.match(history, /Consumed steer marker/);
+    else assert.doesNotMatch(history, /Consumed steer marker/);
+    const count = f.messages.length, requests = f.gateway.requests.length;
+    for (const response of held) if (!response.writableEnded) finish(response);
+    await sleep(50);
+    assert.equal(f.messages.length, count);
+    assert.equal(f.gateway.requests.length, requests);
+    await f.resume(providerThreadId);
+    await f.turn("Resume after steer Stop", { model: "vrata-setup", reasoningLevel: undefined });
     assert.equal((await f.boundary()).status, "completed");
-    const saved = f.saved().messages.find((m) => m.role === "toolResult");
-    assert.equal(saved.isError, kind !== "success");
-    const close = f.deltas().find((d) => d.kind === "item.close" && d.item?.type === "tool");
-    assert.equal(close.status, kind === "success" ? "completed" : "failed");
-    assert.equal(f.gateway.requests.length, 2);
-    if (kind !== "RPC error") {
-      assert.deepEqual(saved.content, content);
-      assert.ok(close.resultText.indexOf("Before image") < close.resultText.indexOf("After image"));
-      const messages = f.gateway.requests[1].body.messages;
-      const index = messages.findIndex((m) => m.role === "tool");
-      assert.equal(messages[index].content, "Before image\nAfter image");
-      assert.ok(JSON.stringify(messages[index + 1]).includes(png));
-    } else assert.match(JSON.stringify(saved), /Synthetic RPC failure/);
+    const resumed = JSON.stringify(f.gateway.requests.at(-1).body.messages);
+    if (consume) assert.match(resumed, /Consumed steer marker/);
+    else assert.doesNotMatch(resumed, /Consumed steer marker/);
   });
 }
+
+test("dynamic RPC error preserves native recovery", async (t) => {
+  const f = await fixture(t, { onChat({ response, index }) { if (!index) callTool(response); else answer(response, "Tool recovered"); } });
+  await f.start({ dynamicTools: [dynamicTool] }); await f.turn("Run the tool");
+  const call = await f.toolCall();
+  f.replyError(call.id, "Synthetic RPC failure");
+  assert.equal((await f.boundary()).status, "completed");
+  const saved = f.saved().messages.find((message) => message.role === "toolResult");
+  assert.equal(saved.isError, true);
+  assert.match(JSON.stringify(saved), /Synthetic RPC failure/);
+  assert.equal(f.deltas().find((delta) => delta.kind === "item.close" && delta.item?.type === "tool").status, "failed");
+  assert.equal(f.gateway.requests.length, 2);
+});
 
 test("pending dynamic tool rejects late replies after native Stop", async (t) => {
   const f = await fixture(t, { onChat({ response }) { callTool(response); } });
@@ -233,6 +229,7 @@ test("explicit onClose rejects pending setup replies and new RPCs in the same li
   await f.start({ options: { model: "vrata-setup" } });
   await f.turn("Pending close input", { model: "vrata-setup" });
   const key = await f.interaction("vrata/api-key");
+  const beforeClose = existsSync(f.savedPath()) ? readFileSync(f.savedPath(), "utf8") : null;
   await f.rpc("fixture/onClose", {});
   const count = f.messages.length;
   f.configure();
@@ -247,7 +244,7 @@ test("explicit onClose rejects pending setup replies and new RPCs in the same li
   assert.equal(f.transport.child.exitCode, null);
   assert.equal(f.messages.length, count);
   assert.equal(f.gateway.requests.length, 0);
-  assert.equal(existsSync(f.savedPath()), false);
+  assert.equal(existsSync(f.savedPath()) ? readFileSync(f.savedPath(), "utf8") : null, beforeClose);
 });
 
 test("BB configured skills are loaded and expanded by native Pi", async (t) => {

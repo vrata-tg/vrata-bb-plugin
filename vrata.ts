@@ -3,6 +3,7 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { AvailableModel } from "@get-bb/plugin-sdk/provider-bridge";
 
 export const VRATA_PROVIDER_ID = "vrata.tg";
 
@@ -111,4 +112,22 @@ export function supportedReasoningLevels(model: Model<Api>): VrataReasoningLevel
   return getSupportedThinkingLevels(model)
     .filter((level) => level !== "minimal")
     .map((level) => level === "off" ? "none" : level);
+}
+
+/** BB selection metadata comes from the same guide as the native Pi extension. */
+export function buildPiAvailableModels(): { models: AvailableModel[]; selectedOnlyModels: AvailableModel[] } {
+  const models = guideModels("https://api.vrata.tg").map((model, index): AvailableModel => {
+    const levels = supportedReasoningLevels(model);
+    return {
+      id: model.id, model: model.id, displayName: model.name, routeProviderId: "vrata",
+      description: "Vrata.tg reasoning, multimodal model via Pi",
+      supportedReasoningEfforts: levels.map((level) => ({
+        reasoningEffort: level, description: level === "none" ? "No extended thinking" : `${level} reasoning`,
+      })),
+      defaultReasoningEffort: levels.includes("medium") ? "medium"
+        : levels.find((level) => level !== "none") ?? "none",
+      isDefault: index === 0,
+    };
+  });
+  return { models, selectedOnlyModels: [] };
 }

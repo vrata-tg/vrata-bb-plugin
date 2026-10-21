@@ -1,4 +1,4 @@
-// Adapted from BB provider-pi; provenance and license: native-pi/NOTICE.md.
+// Adapted from BB provider-pi; provenance and license: pi/NOTICE.md.
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { PluginProviderDeclaration } from "@get-bb/plugin-sdk";

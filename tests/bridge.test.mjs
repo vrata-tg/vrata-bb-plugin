@@ -3,15 +3,18 @@ import test from "node:test";
 import { fixture, models, sleep } from "./bridge-fixture.mjs";
 
 test("native public catalog routes bare IDs through the registered Vrata provider", async (t) => {
-  const f = await fixture(t);
+  const f = await fixture(t, {}, { traceChildren: true });
   const { result } = await f.rpc("model/list", { cwd: f.cwd });
   assert.ok(result.models.some((model) => model.id === models.chat));
   assert.ok(result.models.every((model) => !model.id.includes("/")));
   assert.ok(result.models.every((model) => model.routeProviderId === "vrata"));
+  assert.equal(f.gateway.requests.length, 0, "Discovery cannot generate a model response");
+  assert.deepEqual(f.spawned(), [], "Catalog metadata needs no Pi child");
   await f.start();
   await f.turn("Bare model ID reaches native Pi");
   assert.equal((await f.boundary()).status, "completed");
   assert.equal(f.gateway.requests[0].body.model, models.chat);
+  assert.equal(f.spawned().length, 1, "The witness observes the actual session child");
 });
 
 test("first caller flow acknowledges start and turn before key/model forms, prompts once", async (t) => {
@@ -39,8 +42,9 @@ test("Stop during onboarding rejects a late form reply without starting Pi gener
   await f.start({ options: { model: "vrata-setup" } });
   await f.turn("Do not run after Stop", { model: "vrata-setup" });
   const key = await f.interaction("vrata/api-key");
-  await f.stop();
-  assert.ok(f.deltas().some((d) => d.kind === "session.ended"));
+  const stopped = await f.stop();
+  const terminal = f.records().find(({ event }) => event.type === "turn/completed" && event.status === "interrupted");
+  assert.ok(terminal && terminal.logIndex < f.messages.findIndex((m) => m.id === stopped.id));
   f.configure();
   const count = f.messages.length;
   f.reply(key.id, { kind: "request_answer", value: { configured: true } });

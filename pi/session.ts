@@ -9,7 +9,7 @@ import {
   buildPiChildEnv,
   type PiRpcChildExitInfo,
   type PiRuntimeOptions,
-} from "./rpc-child.js";
+} from "./child.js";
 
 export interface PiRpcSessionOptions {
   runtime: PiRuntimeOptions;
@@ -27,7 +27,6 @@ export interface PiRpcSessionOptions {
   scratchDir: string;
   extensionPath: string;
   recordThreadId: string;
-  noSession?: boolean;
 }
 
 export interface DynamicToolDefinition {
@@ -45,7 +44,7 @@ export type ToolCallForwarder = (
 
 export type PiRpcEvent = Record<string, unknown> & { type: string };
 type PiSessionEventHandler = (event: PiRpcEvent) => void;
-type PiSessionDoneHandler = (error?: unknown) => void;
+type PiSessionErrorHandler = (error: unknown, interruptedRun: boolean) => void;
 
 type PiInputQueue = "followUp" | "steering";
 
@@ -61,18 +60,9 @@ interface TrackedInputConsumption {
   promise: Promise<void>;
 }
 
-export interface PiPromptRunOutcome {
-  error?: unknown;
-  aborted?: boolean;
-}
-
 export interface PiInputDispatch {
   consumed: Promise<void>;
-  settled: Promise<PiPromptRunOutcome | null>;
-}
-
-interface PendingRunSettlement {
-  resolve: (outcome: PiPromptRunOutcome) => void;
+  admitted: Promise<"started" | "queued" | "handled">;
 }
 
 interface ChannelReply {
@@ -80,41 +70,12 @@ interface ChannelReply {
   reject: (error: Error) => void;
 }
 
-const PI_TRANSIENT_AUTH_RETRY_DELAY_MS = 250;
-const PI_TRANSIENT_AUTH_MAX_RETRIES = 8;
 function readinessTimeoutMs(): number {
   const configured = Number(process.env.BB_PI_BRIDGE_READINESS_TIMEOUT_MS);
   return Number.isFinite(configured) && configured > 0 ? configured : 60_000;
 }
 const CHANNEL_REQUEST_TIMEOUT_MS = 30_000;
 const AGENT_END_LEAF_TIMEOUT_MS = 5_000;
-
-type PiSessionConstructionOutcome = { ok: true } | { ok: false; error: Error };
-
-function waitForPiTransientAuthRetry(): Promise<void> {
-  return new Promise((resolve) =>
-    setTimeout(resolve, PI_TRANSIENT_AUTH_RETRY_DELAY_MS),
-  );
-}
-
-export async function runPiTransientAuthConstruction(args: {
-  attempt: () => Promise<PiSessionConstructionOutcome>;
-  discardFailedAttempt: () => void;
-  isClosed: () => boolean;
-  waitBeforeRetry: () => Promise<void>;
-}): Promise<void> {
-  for (let attempt = 0; ; attempt += 1) {
-    const outcome = await args.attempt();
-    if (outcome.ok) {
-      return;
-    }
-    if (attempt >= PI_TRANSIENT_AUTH_MAX_RETRIES || args.isClosed()) {
-      throw outcome.error;
-    }
-    args.discardFailedAttempt();
-    await args.waitBeforeRetry();
-  }
-}
 
 export interface PiRpcSessionState {
   model?: { provider?: string; id?: string; contextWindow?: number };
@@ -138,7 +99,6 @@ export class PiRpcSession {
   };
   private autoRetryInProgress = false;
   private terminalSteerSettlement: Promise<void> | null = null;
-  private readonly pendingRunSettlements: PendingRunSettlement[] = [];
   private readonly channelReplies = new Map<string, ChannelReply>();
   private nextChannelRequestId = 0;
   private lastKnownLeafId: string | null = null;
@@ -155,14 +115,13 @@ export class PiRpcSession {
   } | null = null;
   private liveModel: PiRpcSessionState["model"] | undefined;
   private closed = false;
-  private liveThinkingLevel: string | undefined;
   private lastAgentEnd: PiRpcEvent | undefined;
 
   constructor(
     private readonly options: PiRpcSessionOptions,
     private readonly forwardToolCall: ToolCallForwarder,
     private readonly onEvent: PiSessionEventHandler,
-    private readonly onDone: PiSessionDoneHandler,
+    private readonly onError: PiSessionErrorHandler,
   ) {}
 
   getIsCompacting(): boolean {
@@ -173,30 +132,11 @@ export class PiRpcSession {
     return this.liveModel;
   }
 
-  getLiveThinkingLevel(): string | undefined { return this.liveThinkingLevel; }
-
   getContextUsage(): { tokens: number | null; contextWindow: number } | null {
     return this.lastContextUsage;
   }
 
-  getProviderCheckpointId(): string | undefined {
-    return this.lastKnownLeafId ?? undefined;
-  }
-
   async start(): Promise<void> {
-    await runPiTransientAuthConstruction({
-      attempt: () => this.spawnAndVerify(),
-      discardFailedAttempt: () => {
-        const failed = this.child;
-        this.child = undefined;
-        failed?.kill();
-      },
-      isClosed: () => this.closed,
-      waitBeforeRetry: waitForPiTransientAuthRetry,
-    });
-  }
-
-  private async spawnAndVerify(): Promise<PiSessionConstructionOutcome> {
     if (this.closed) throw new Error("Pi session closed before startup");
     const toolsFilePath = join(
       this.options.scratchDir,
@@ -212,12 +152,8 @@ export class PiRpcSession {
     const scratchFiles = [toolsFilePath, ...promptFiles.paths];
 
     const args: string[] = ["--mode", "rpc"];
-    if (this.options.noSession) {
-      args.push("--no-session");
-    } else {
-      mkdirSync(dirname(this.options.sessionFilePath), { recursive: true });
-      args.push("--session", this.options.sessionFilePath);
-    }
+    mkdirSync(dirname(this.options.sessionFilePath), { recursive: true });
+    args.push("--session", this.options.sessionFilePath);
     args.push(
       "--session-dir",
       this.options.sessionDir,
@@ -239,7 +175,7 @@ export class PiRpcSession {
     }
     // Pi 1.3 initializes an existing session with --thinking but does not append
     // the changed level to its transcript. Its RPC setter persists a real change.
-    const restoringSession = !this.options.noSession && existsSync(this.options.sessionFilePath);
+    const restoringSession = existsSync(this.options.sessionFilePath);
     if (this.options.thinkingLevel && !restoringSession) {
       args.push("--thinking", this.options.thinkingLevel);
     }
@@ -273,29 +209,12 @@ export class PiRpcSession {
     }
     await this.awaitReady(readinessTimeoutMs(), child);
     if (state.model?.provider === "unknown") {
-      return {
-        ok: false,
-        error: new Error("Pi has no authenticated model provider available."),
-      };
+      throw new Error("Pi has no authenticated model provider available.");
     }
     const wanted = this.options.model;
-    if (
-      wanted &&
-      (state.model?.provider !== wanted.provider ||
-        state.model?.id !== wanted.id)
-    ) {
-      return {
-        ok: false,
-        error: new Error(
-          `Pi did not start with model "${wanted.provider}/${wanted.id}"` +
-            (state.model?.id
-              ? ` (it chose "${String(state.model.provider)}/${String(state.model.id)}")`
-              : "") +
-            ". Check that the provider is authenticated.",
-        ),
-      };
+    if (wanted && (state.model?.provider !== wanted.provider || state.model?.id !== wanted.id)) {
+      throw new Error("Pi did not start with the requested model.");
     }
-    return { ok: true };
   }
 
   private awaitReady(timeoutMs: number, child: PiRpcChild): Promise<void> {
@@ -328,80 +247,57 @@ export class PiRpcSession {
       { type: "get_state" },
       timeoutMs,
     );
+    this.requireChild();
     const state = (data ?? {}) as PiRpcSessionState;
     this.liveModel = state.model;
-    this.liveThinkingLevel = state.thinkingLevel;
     return state;
   }
 
-  prompt(text: string, images?: ImageContent[]): PiInputDispatch {
-    const child = this.child;
-    if (!child || child.exited) {
-      const consumed = Promise.reject(new Error("No active Pi session"));
-      void consumed.catch(() => undefined);
-      return { consumed, settled: Promise.resolve(null) };
+  async applyOptions(options: { model?: { provider: string; id: string }; thinkingLevel?: string }): Promise<void> {
+    if (!options.model && options.thinkingLevel === undefined) return;
+    const state = await this.getState();
+    const child = this.requireChild();
+    const modelChanged = options.model !== undefined &&
+      (options.model.provider !== state.model?.provider || options.model.id !== state.model?.id);
+    const thinkingLevel = options.thinkingLevel ?? state.thinkingLevel;
+    if (!modelChanged && thinkingLevel === state.thinkingLevel) return;
+    // Native setters persist state but do not wait for an active run themselves.
+    if (state.isStreaming || state.isCompacting || this.isProcessing) {
+      await child.requestOk({ type: "abort" });
+      await this.deliveryChain;
+      this.requireChild();
     }
-    this.isProcessing = true;
-    const tracked = this.trackPendingInputConsumption("followUp");
-    const settlement = new Promise<PiPromptRunOutcome>((resolve) => {
-      this.pendingRunSettlements.push({ resolve });
-    });
-    const settled = this.dispatchWithTransientAuthRetry(
-      child,
-      {
-        type: "prompt",
-        message: text,
-        ...(images && images.length > 0 ? { images } : {}),
-        streamingBehavior: "followUp",
-      },
-      NO_REQUEST_TIMEOUT,
-    ).then(
-      async (): Promise<PiPromptRunOutcome | null> => {
-        if (tracked.pending.queuedText !== null) {
-          this.dropRunSettlement(settlement);
-          return null;
-        }
-        this.resolvePendingInputConsumption(tracked.pending);
-        const outcome = await settlement;
-        return outcome;
-      },
-      (error: unknown): PiPromptRunOutcome | null => {
-        this.isProcessing = false;
-        this.dropRunSettlement(settlement);
-        const queued = tracked.pending.queuedText !== null;
-        this.rejectPendingInputConsumption(tracked.pending, asError(error));
-        this.rejectPendingInputConsumptions(
-          "Pi prompt failed before input was consumed",
-        );
-        this.onDone(error);
-        return queued ? null : { error };
-      },
-    );
-    return { consumed: tracked.promise, settled };
+    if (modelChanged && options.model) {
+      await child.requestOk({ type: "set_model", provider: options.model.provider, modelId: options.model.id });
+      this.requireChild();
+    }
+    // set_model can select a different default thinking level. Restore the
+    // requested/current selection afterwards; Pi clamps and persists it.
+    if (thinkingLevel !== undefined) {
+      await child.requestOk({ type: "set_thinking_level", level: thinkingLevel });
+      this.requireChild();
+    }
+    await this.getState();
+    this.requireChild();
   }
 
-  async steer(text: string, images?: ImageContent[]): Promise<void> {
+  prompt(text: string, images?: ImageContent[], steering = false): PiInputDispatch {
     const child = this.requireChild();
-    const tracked = this.trackPendingInputConsumption("steering");
-    try {
-      await this.dispatchWithTransientAuthRetry(child, {
-        type: "prompt",
-        message: text,
-        ...(images && images.length > 0 ? { images } : {}),
-        streamingBehavior: "steer",
-      });
-    } catch (error) {
+    const tracked = this.trackPendingInputConsumption(steering ? "steering" : "followUp");
+    const admitted = child.requestOk({
+      type: "prompt", message: text,
+      ...(images?.length ? { images } : {}),
+      streamingBehavior: steering ? "steer" : "followUp",
+    }, NO_REQUEST_TIMEOUT).then((data) => {
+      this.requireChild();
+      const disposition = (data as { disposition: "started" | "queued" | "handled" }).disposition;
+      if (disposition !== "queued") this.resolvePendingInputConsumption(tracked.pending);
+      return disposition;
+    }, (error: unknown) => {
       this.rejectPendingInputConsumption(tracked.pending, asError(error));
-      this.onDone(error);
       throw error;
-    }
-    if (tracked.pending.queuedText === null) {
-      this.resolvePendingInputConsumption(tracked.pending);
-      return;
-    }
-    void tracked.promise.catch((error) => {
-      this.onDone(error);
     });
+    return { consumed: tracked.promise, admitted };
   }
 
   async compact(): Promise<void> {
@@ -444,69 +340,14 @@ export class PiRpcSession {
     await this.refreshLeafId(Math.max(1, deadline - Date.now())).catch(
       () => undefined,
     );
-    child.closeGracefully();
+    await child.closeGracefully();
     this.isProcessing = false;
     this.isCompacting = false;
     return this.lastKnownLeafId ?? undefined;
   }
 
-  kill(): void {
-    this.closed = true;
-    this.child?.kill();
-  }
-
-  static async forkSessionFile(args: {
-    signal: AbortSignal;
-    runtime: PiRuntimeOptions;
-    sourceFile: string;
-    targetFile: string;
-    cwd: string;
-    sessionDir: string;
-    checkpointId?: string;
-    extensionPath: string;
-    scratchDir: string;
-    recordThreadId: string;
-  }): Promise<void> {
-    const session = new PiRpcSession(
-      {
-        runtime: args.runtime,
-        cwd: args.cwd,
-        sessionFilePath: args.sourceFile,
-        sessionDir: args.sessionDir,
-        scratchDir: args.scratchDir,
-        extensionPath: args.extensionPath,
-        recordThreadId: args.recordThreadId,
-        noSession: true,
-      },
-      () =>
-        Promise.resolve({ content: "fork helper has no tools", isError: true }),
-      () => undefined,
-      () => undefined,
-    );
-    const abort = () => session.kill();
-    args.signal.throwIfAborted();
-    args.signal.addEventListener("abort", abort, { once: true });
-    try {
-      await session.start();
-      args.signal.throwIfAborted();
-      await session.channelRequest({
-        method: "fork",
-        sourceFile: args.sourceFile,
-        targetFile: args.targetFile,
-        cwd: args.cwd,
-        sessionDir: args.sessionDir,
-        ...(args.checkpointId === undefined
-          ? {}
-          : { checkpointId: args.checkpointId }),
-      });
-    } finally {
-      args.signal.removeEventListener("abort", abort);
-      session.kill();
-    }
-  }
-
   private requireChild(): PiRpcChild {
-    if (!this.child || this.child.exited) {
+    if (this.closed || !this.child || this.child.exited) {
       throw new Error("No active Pi session");
     }
     return this.child;
@@ -529,31 +370,6 @@ export class PiRpcSession {
       paths.push(file);
     }
     return { args, paths };
-  }
-
-  private async dispatchWithTransientAuthRetry(
-    child: PiRpcChild,
-    command: Record<string, unknown>,
-    timeoutMs?: number,
-  ): Promise<void> {
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        await child.requestOk(command, timeoutMs);
-        return;
-      } catch (error) {
-        if (
-          !(error instanceof Error) ||
-          error instanceof PiRpcChildExitedError ||
-          !error.message.startsWith("No API key found for ") ||
-          attempt >= PI_TRANSIENT_AUTH_MAX_RETRIES
-        ) {
-          throw error;
-        }
-        await new Promise((resolve) =>
-          setTimeout(resolve, PI_TRANSIENT_AUTH_RETRY_DELAY_MS),
-        );
-      }
-    }
   }
 
   private handleEvent(raw: Record<string, unknown>): void {
@@ -590,7 +406,6 @@ export class PiRpcSession {
         };
         this.lastAgentEnd = undefined;
         this.onEvent(settled);
-        this.settleRun(settled);
       });
       return;
     }
@@ -614,31 +429,6 @@ export class PiRpcSession {
     const next = this.deliveryChain.then(deliver, deliver);
     this.deliveryChain = next.catch(() => undefined);
     return this.deliveryChain;
-  }
-
-  private settleRun(event: PiRpcEvent): void {
-    const pending = this.pendingRunSettlements.shift();
-    if (!pending) {
-      return;
-    }
-    const messages = Array.isArray(event.messages) ? event.messages : [];
-    const last = messages[messages.length - 1] as
-      | { role?: string; stopReason?: string; errorMessage?: string }
-      | undefined;
-    if (
-      last?.role === "assistant" &&
-      last.stopReason === "error" &&
-      typeof last.errorMessage === "string"
-    ) {
-      pending.resolve({ error: new Error(last.errorMessage) });
-      return;
-    }
-    pending.resolve({ aborted: event.aborted === true });
-  }
-
-  private dropRunSettlement(settlement: Promise<PiPromptRunOutcome>): void {
-    void settlement;
-    this.pendingRunSettlements.pop();
   }
 
   private async refreshLeafId(
@@ -763,7 +553,7 @@ export class PiRpcSession {
     request: Record<string, unknown>,
     timeoutMs = CHANNEL_REQUEST_TIMEOUT_MS,
   ): Promise<unknown> {
-    const child = this.requireChild();
+    const child = this.child!;
     this.nextChannelRequestId += 1;
     const id = `cr-${this.nextChannelRequestId}`;
     return new Promise<unknown>((resolve, reject) => {
@@ -800,13 +590,11 @@ export class PiRpcSession {
       leafWaiter(null);
     }
     this.rejectPendingInputConsumptions("Pi exited before input was consumed");
-    for (const pending of this.pendingRunSettlements.splice(0)) {
-      pending.resolve({ error: new PiRpcChildExitedError(info) });
-    }
+    const interruptedRun = this.isProcessing && !this.isCompacting;
     this.isProcessing = false;
     this.isCompacting = false;
     if (!this.closed) {
-      this.onDone(new PiRpcChildExitedError(info));
+      this.onError(new PiRpcChildExitedError(info), interruptedRun);
     }
   }
 
@@ -828,21 +616,8 @@ export class PiRpcSession {
   private trackPendingInputConsumption(
     queue: PiInputQueue,
   ): TrackedInputConsumption {
-    let resolvePromise: (() => void) | undefined;
-    let rejectPromise: ((error: Error) => void) | undefined;
-    const promise = new Promise<void>((resolve, reject) => {
-      resolvePromise = resolve;
-      rejectPromise = reject;
-    });
-    if (!resolvePromise || !rejectPromise) {
-      throw new Error("Failed to track Pi input consumption");
-    }
-    const pending: PendingInputConsumption = {
-      queue,
-      queuedText: null,
-      reject: rejectPromise,
-      resolve: resolvePromise,
-    };
+    const { promise, resolve, reject } = createDeferred();
+    const pending: PendingInputConsumption = { queue, queuedText: null, resolve, reject };
     this.pendingInputConsumptions.push(pending);
     void promise.catch(() => undefined);
     return { pending, promise };

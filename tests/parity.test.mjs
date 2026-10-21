@@ -31,7 +31,10 @@ for (const [transport, model] of Object.entries(models)) {
   test(`raw guide / embedded ${transport}: same model, answer, usage and native tool schemas`, async (t) => {
     const results = [];
     for (const kind of ["raw", "embedded"]) {
-      const f = await fixture(t);
+      const f = await fixture(t, transport === "chat" ? { onChat({ response }) {
+        chunk(response, { role: "assistant", reasoning_content: "Native reasoning marker" });
+        answer(response);
+      } } : {});
       const agent = await lane(f, kind, model);
       await agent.prompt("Shared transport prompt"); await agent.settled();
       const assistant = agent.saved().messages.findLast((m) => m.role === "assistant");
@@ -39,7 +42,25 @@ for (const [transport, model] of Object.entries(models)) {
       assert.equal(assistant.content.find((part) => part.type === "text").text, "Loopback answer");
       assert.ok(assistant.usage.totalTokens > 0);
       assert.equal(f.gateway.requests.length, 1);
-      results.push({ path: f.gateway.requests[0].path, model: f.gateway.requests[0].body.model, tools: f.gateway.requests[0].body.tools, usage: assistant.usage, content: assistant.content });
+      let contextWindow;
+      if (kind === "raw") contextWindow = (await agent.raw.rpc("get_state")).result.model.contextWindow;
+      else {
+        const usage = await until(() => f.events().findLast((event) => event.type === "thread/tokenUsage/updated"), "BB usage event");
+        assert.equal(usage.tokenUsage.last.totalTokens, assistant.usage.totalTokens);
+        assert.equal(usage.tokenUsage.last.inputTokens, assistant.usage.input);
+        assert.equal(usage.tokenUsage.last.outputTokens, assistant.usage.output);
+        const context = await until(() => f.events().findLast((event) => event.type === "thread/contextWindowUsage/updated" && event.contextWindowUsage.usedTokens > 0), "BB context event");
+        contextWindow = context.contextWindowUsage.modelContextWindow;
+        assert.ok(contextWindow > 0);
+        const text = f.events().filter((event) => event.type === "item/agentMessage/delta").map((event) => event.delta).join("");
+        assert.equal(text, "Loopback answer");
+        if (transport === "chat") {
+          const thinking = f.events().filter((event) => event.type === "item/reasoning/textDelta").map((event) => event.delta).join("");
+          assert.equal(thinking, "Native reasoning marker");
+        }
+      }
+      if (transport === "chat") assert.equal(assistant.content.find((part) => part.type === "thinking").thinking, "Native reasoning marker");
+      results.push({ path: f.gateway.requests[0].path, model: f.gateway.requests[0].body.model, tools: f.gateway.requests[0].body.tools, usage: assistant.usage, content: assistant.content, contextWindow });
       await agent.close();
     }
     assert.deepEqual(results[1], results[0]);
@@ -169,8 +190,11 @@ test("raw native SessionManager / embedded checkpoint fork preserves the source 
   for (const kind of ["raw", "embedded"]) {
     const f = await fixture(t);
     const agent = await lane(f, kind);
-    await agent.prompt("Before checkpoint marker"); await agent.settled();
-    const checkpoint = agent.entries().findLast((entry) => entry.type === "message" && entry.message.role === "assistant").id;
+    await agent.prompt("Before checkpoint marker"); const completion = await agent.settled();
+    const checkpoint = kind === "raw"
+      ? agent.entries().findLast((entry) => entry.type === "message" && entry.message.role === "assistant").id
+      : completion.providerCheckpointId;
+    assert.ok(checkpoint, "The public completed event must publish a fork checkpoint");
     await agent.prompt("AFTER_CHECKPOINT_MUST_BE_EXCLUDED"); await agent.settled();
     const sourceId = kind === "embedded" ? f.current.providerThreadId : undefined;
     await agent.close();
@@ -182,6 +206,8 @@ test("raw native SessionManager / embedded checkpoint fork preserves the source 
       fork = await f.raw({ sessionFile: forkPath });
       await fork.prompt("Fork continuation"); await fork.settled();
     } else {
+      await assert.rejects(f.rpc("thread/fork", { threadId: "thr_invalid_checkpoint", cwd: f.cwd, sourceProviderThreadId: sourceId, sourceProviderCheckpointId: "missing-native-checkpoint", options, instructionMode: "append" }));
+      assert.equal(readFileSync(agent.path, "utf8"), source);
       const { result } = await f.rpc("thread/fork", { threadId: "thr_checkpoint_fork", cwd: f.cwd, sourceProviderThreadId: sourceId, sourceProviderCheckpointId: checkpoint, options, instructionMode: "append" });
       await f.resume(result.providerThreadId);
       await f.turn("Fork continuation"); await f.boundary();
@@ -219,12 +245,24 @@ for (const failed of [false, true]) {
       await agent.prompt("Run dynamic lookup");
       if (kind === "embedded") {
         const call = await f.toolCall();
+        assert.equal(call.params.tool, dynamicTool.name);
+        assert.deepEqual(call.params.arguments, { value: "fixture" });
         f.reply(call.id, { success: !failed, contentItems: [{ type: "inputText", text: content[0].text }, { type: "inputImage", imageUrl: `data:image/png;base64,${png}` }, { type: "inputText", text: content[2].text }] });
       }
       await agent.settled();
+      if (kind === "embedded") {
+        const close = f.deltas().find((delta) => delta.kind === "item.close" && delta.item?.type === "tool");
+        assert.equal(close.status, failed ? "failed" : "completed");
+        assert.match(close.resultText, /Rich prefix[\s\S]*Rich suffix/);
+      }
       const result = agent.saved().messages.find((message) => message.role === "toolResult");
       assert.equal(result.isError, failed);
       assert.deepEqual(result.content, content);
+      assert.equal(f.gateway.requests.length, 2);
+      const messages = f.gateway.requests[1].body.messages;
+      const toolIndex = messages.findIndex((message) => message.role === "tool");
+      assert.equal(messages[toolIndex].content, "Rich prefix\nRich suffix");
+      assert.ok(JSON.stringify(messages[toolIndex + 1]).includes(png));
       observations.push({ content: result.content, isError: result.isError, next: f.gateway.requests[1].body.messages.filter((m) => m.role === "tool" || (m.role === "user" && JSON.stringify(m).includes("data:image/png"))) });
       await agent.close();
     }
@@ -232,10 +270,65 @@ for (const failed of [false, true]) {
   });
 }
 
-test("raw / embedded model and thinking resume preserve the same effective request", async (t) => {
+test("raw / embedded nested tool schema preserves unions and native argument validation", async (t) => {
+  const tool = {
+    name: "nested_lookup", description: "Look up structured selectors.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["target"],
+      properties: { target: {
+        type: "object", additionalProperties: false, required: ["mode", "selectors"],
+        properties: {
+          mode: { type: "string", enum: ["read", "write"] },
+          selectors: { type: "array", minItems: 1, items: { oneOf: [
+            { type: "object", additionalProperties: false, required: ["field", "value"], properties: { field: { const: "name" }, value: { type: "string", pattern: "^[a-z]+$" } } },
+            { type: "object", additionalProperties: false, required: ["field", "value"], properties: { field: { const: "line" }, value: { type: "integer", minimum: 1 } } },
+          ] } },
+        },
+      } },
+    },
+  };
+  const valid = { target: { mode: "read", selectors: [{ field: "line", value: 7 }, { field: "name", value: "alpha" }] } };
+  const invalid = { target: { mode: "not-an-enum-member", selectors: [{ field: "line", value: 0 }] } };
   const observations = [];
   for (const kind of ["raw", "embedded"]) {
-    const f = await fixture(t);
+    const f = await fixture(t, { onChat({ response, index }) {
+      if (index < 2) callTool(response, tool.name, index === 0 ? invalid : valid);
+      else answer(response);
+    } });
+    let raw;
+    if (kind === "raw") {
+      const extension = join(f.root, "nested-reference.mjs");
+      writeFileSync(extension, `export default function(pi) {
+        pi.registerTool({ name: ${JSON.stringify(tool.name)}, label: "lookup", description: ${JSON.stringify(tool.description)}, parameters: ${JSON.stringify(tool.inputSchema)},
+          execute: async (_id, args) => ({ content: [{ type: "text", text: JSON.stringify(args) }] }) });
+      }`);
+      raw = await f.raw({ extraArgs: ["--extension", extension] });
+      await raw.prompt("Validate nested selectors"); await raw.settled();
+    } else {
+      await f.start({ dynamicTools: [tool] }); await f.turn("Validate nested selectors");
+      const call = await f.toolCall();
+      assert.deepEqual(call.params.arguments, valid, "Invalid nested input must not reach the BB tool");
+      assert.equal(f.gateway.requests.length, 2, "Native validation rejected the first call");
+      f.reply(call.id, { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(call.params.arguments) }] });
+      assert.equal((await f.boundary()).status, "completed");
+      assert.equal(f.messages.filter((message) => message.method === "item/tool/call").length, 1);
+    }
+    const results = (raw ? raw.saved() : f.saved()).messages.filter((message) => message.role === "toolResult" && message.toolName === tool.name);
+    assert.deepEqual(results.map((result) => result.isError), [true, false]);
+    assert.match(JSON.stringify(results[0].content), /Validation failed/);
+    assert.equal(results[1].content[0].text, JSON.stringify(valid));
+    const schema = f.gateway.requests[0].body.tools.find((entry) => entry.function.name === tool.name).function.parameters;
+    assert.deepEqual(schema.properties.target.properties.selectors.items.oneOf, tool.inputSchema.properties.target.properties.selectors.items.oneOf);
+    observations.push({ schema, result: results[1].content });
+    if (raw) await raw.child.close(); else await f.stop("release");
+  }
+  assert.deepEqual(observations[1], observations[0]);
+});
+
+test("raw / embedded native setters keep one child and preserve model and thinking across restart", async (t) => {
+  const observations = [];
+  for (const kind of ["raw", "embedded"]) {
+    const f = await fixture(t, {}, { traceChildren: kind === "embedded" });
     let raw;
     if (kind === "raw") {
       raw = await f.raw(); await raw.prompt("Initial model"); await raw.settled();
@@ -248,9 +341,18 @@ test("raw / embedded model and thinking resume preserve the same effective reque
     } else {
       const { providerThreadId } = await f.start();
       await f.turn("Initial model"); await f.boundary();
+      assert.equal(f.spawned().length, 1);
+      const pid = f.spawned()[0].pid;
       await f.turn("Explicit selection", { model: models.responses, reasoningLevel: "high" }); await f.boundary();
+      assert.deepEqual(f.spawned().map((child) => child.pid), [pid]);
+      assert.equal(f.gateway.requests[1].path, "/v1/responses");
+      assert.equal(f.gateway.requests[1].body.reasoning.effort, "high");
+      assert.equal(f.saved().model.modelId, models.responses);
+      assert.equal(f.saved().thinkingLevel, "high");
       await f.restart(); await f.resume(providerThreadId);
       await f.turn("Restored selection", { model: "vrata-setup", reasoningLevel: undefined }); await f.boundary();
+      assert.equal(f.saved().model.modelId, models.responses);
+      assert.equal(f.saved().thinkingLevel, "high");
     }
     const request = f.gateway.requests.at(-1).body;
     assert.equal(request.model, models.responses);

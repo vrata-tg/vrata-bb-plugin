@@ -27,7 +27,6 @@ export interface PiRpcChildExitInfo {
   code: number | null;
   signal: NodeJS.Signals | null;
   stderrTail: string;
-  beforeFirstResponse: boolean;
 }
 
 export interface PiRpcResponse {
@@ -89,7 +88,6 @@ export class PiRpcChild {
   private readonly redactor: ReturnType<typeof createCredentialRedactor>;
   private nextRequestId = 0;
   private stderrTail = "";
-  private sawResponse = false;
   private exitInfo: PiRpcChildExitInfo | null = null;
   private readonly settledExit: Promise<PiRpcChildExitInfo>;
   private readonly channelWriter: Writable | null;
@@ -163,7 +161,6 @@ export class PiRpcChild {
         code,
         signal,
         stderrTail: this.stderrTail,
-        beforeFirstResponse: !this.sawResponse,
       };
       this.exitInfo = info;
       resolveSettledExit(info);
@@ -174,7 +171,7 @@ export class PiRpcChild {
       this.pending.clear();
       args.onExit(info);
     };
-    this.child.on("error", (error) => {
+    this.child.on("error", () => {
       this.stderrTail = "Unable to start the embedded Pi runtime";
     });
     this.child.on("exit", settleExit);
@@ -183,14 +180,6 @@ export class PiRpcChild {
 
   get exited(): boolean {
     return this.exitInfo !== null;
-  }
-
-  get pid(): number | undefined {
-    return this.child.pid;
-  }
-
-  waitForExit(): Promise<PiRpcChildExitInfo> {
-    return this.settledExit;
   }
 
   request(
@@ -239,7 +228,7 @@ export class PiRpcChild {
     writer.write(`${JSON.stringify(message)}\n`);
   }
 
-  closeGracefully(): void {
+  async closeGracefully(): Promise<void> {
     if (this.exitInfo !== null) {
       return;
     }
@@ -250,6 +239,8 @@ export class PiRpcChild {
       }
     }, SIGTERM_GRACE_MS);
     timer.unref?.();
+    await this.settledExit;
+    clearTimeout(timer);
   }
 
   kill(): void {
@@ -324,7 +315,6 @@ export class PiRpcChild {
     this.redactor.refresh();
     const message = this.redactor.value(parsed) as Record<string, unknown>;
     if (message.type === "response") {
-      this.sawResponse = true;
       const id = typeof message.id === "string" ? message.id : undefined;
       const pending = id === undefined ? undefined : this.pending.get(id);
       if (pending && id !== undefined) {

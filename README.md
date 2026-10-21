@@ -1,6 +1,6 @@
 # Врата AI для bb
 
-Плагин добавляет в bb провайдер **Врата AI (Pi)** со встроенным полноценным **Pi 1.3.0**. Отдельный CLI устанавливать не нужно. Плагин запускает штатный Pi RPC через Node.js и использует адаптированный first-party Pi bridge bb для событий и управления сессиями. Нужны bb 0.41+ и Node.js 22.19.0+.
+Плагин добавляет в bb провайдер **Врата AI (Pi)** со встроенным полноценным **Pi 1.3.0**. Отдельный CLI устанавливать не нужно. Сессии, инструменты, повторы и сжатие контекста выполняет штатный Pi; плагин связывает его с BB. Нужны bb 0.41+ и Node.js 22.19.0+.
 
 ## Установка
 
@@ -66,4 +66,4 @@ npm test
 
 Pi закреплён в npm dependencies. В Git хранится список byte imports, а штатная сборка bb включает файлы установленных пакетов в `host.js`. Архива runtime в исходниках нет. После изменения pinned зависимостей список и checksum обновляются командой `node scripts/vendor-pi-runtime.mjs`: генератор выполняет отдельный `npm ci` по lockfile и не меняет рабочие dependencies. Managed Git install не требует build hooks.
 
-`npm test` предварительно собирает общий runtime asset для тестов: import attribute `type: "bytes"` обрабатывается esbuild, а не самим Node.js. Полные тексты лицензий находятся в [packaging/pi/NOTICE.md](packaging/pi/NOTICE.md); одинаковые тексты хранятся один раз со ссылками из каждого package section. Provenance и изменения заимствованного bridge — в [native-pi/NOTICE.md](native-pi/NOTICE.md).
+`npm test` предварительно собирает общий runtime asset для тестов: import attribute `type: "bytes"` обрабатывается esbuild, а не самим Node.js. Полные тексты лицензий находятся в [packaging/pi/NOTICE.md](packaging/pi/NOTICE.md); одинаковые тексты хранятся один раз со ссылками из каждого package section. Интеграция с BB находится в `bridge.ts` и `pi/`: один Pi-процесс на сессию, прямые RPC-команды и перевод событий. Происхождение кода и лицензия — в [pi/NOTICE.md](pi/NOTICE.md).
