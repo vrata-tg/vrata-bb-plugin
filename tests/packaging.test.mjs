@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { createInterface } from "node:readline";
 import { join } from "node:path";
@@ -288,15 +289,15 @@ if (process.argv[2] === "--probe") {
     }
     assert.equal(existsSync(join(root, "node_modules/@earendil-works/pi-coding-agent")), false);
     assert.equal(existsSync(join(root, "node_modules/esbuild")), false);
-    const { build } = await import("esbuild");
-    const fallback = join(installed, "server-fallback.mjs");
-    await build({ entryPoints: [join(installed, manifest.bb.server)], outfile: fallback,
-      bundle: true, platform: "node", format: "esm", packages: "external", target: "node22" });
-    for (const entry of [join(installed, "dist/server.js"), fallback]) {
-      await exec(process.execPath, ["--no-global-search-paths", "--input-type=module", "-e",
-        `import plugin from ${JSON.stringify(pathToFileURL(entry).href)}; if (typeof plugin !== 'function') throw Error('Invalid plugin entry');`],
-      { cwd: root, env, timeout: 30000 });
-    }
+    await exec(process.execPath, ["--no-global-search-paths", "--input-type=module", "-e",
+      `import plugin from ${JSON.stringify(pathToFileURL(join(installed, "dist/server.js")).href)}; if (typeof plugin !== 'function') throw Error('Invalid plugin entry');`],
+    { cwd: root, env, timeout: 30000 });
+    // BB loads source with Jiti and a root SDK alias, including subpath imports.
+    const { createJiti } = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"))("jiti");
+    const sdkRuntime = createRequire(join(installed, "package.json")).resolve("@get-bb/plugin-sdk");
+    const jiti = createJiti(import.meta.url, { moduleCache: false, alias: { "@get-bb/plugin-sdk": sdkRuntime } });
+    const { default: sourcePlugin } = await jiti.import(join(installed, manifest.bb.server));
+    assert.equal(typeof sourcePlugin, "function");
     await exec(process.execPath, [fileURLToPath(import.meta.url), "--probe", installed], { env, timeout: 60000 });
   });
 }

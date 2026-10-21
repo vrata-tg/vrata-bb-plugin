@@ -1,23 +1,11 @@
 // Adapted from BB provider-pi; provenance and license: pi/NOTICE.md.
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import type { PluginProviderDeclaration } from "@get-bb/plugin-sdk";
 import {
   experimental_filterResolvedNativeRoots,
   type ExperimentalNativeRootsResolveAnswer,
 } from "@get-bb/plugin-sdk/host";
 import { z } from "zod";
-
-export const PI_NATIVE_ROOTS_DECLARATION: Pick<
-  PluginProviderDeclaration,
-  "experimental_nativeSkillRoots" | "experimental_resolvesNativeRoots"
-> = {
-  experimental_nativeSkillRoots: {
-    user: [".agents/skills"],
-    project: [".pi/skills", ".agents/skills"],
-  },
-  experimental_resolvesNativeRoots: true,
-};
 
 const piSettingsSchema = z
   .object({ skills: z.array(z.string()).optional() })

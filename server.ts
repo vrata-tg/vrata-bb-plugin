@@ -1,7 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { accountContract, configurationContract, credentialsContract, type ConfigurationTarget } from "./contract.js";
 import { registerBalanceEvents } from "./balance-events.js";
-import { PI_NATIVE_ROOTS_DECLARATION } from "./native-roots.js";
 
 const setupModel = {
   id: "vrata-setup",
@@ -109,7 +108,11 @@ export default function plugin(bb: BbPluginApi): void {
       brandPrefix: "Врата AI ",
     },
     maintenance: { health: true, usage: false, installation: false },
-    ...PI_NATIVE_ROOTS_DECLARATION,
+    experimental_nativeSkillRoots: {
+      user: [".agents/skills"],
+      project: [".pi/skills", ".agents/skills"],
+    },
+    experimental_resolvesNativeRoots: true,
     composerActions: [],
     capabilities: {
       supportsServiceTier: false,
