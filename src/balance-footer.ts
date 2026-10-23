@@ -14,6 +14,7 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
   let hostsError = false;
   let discovering = true;
   let hostId = "";
+  let automaticHost = true;
   let requestEpoch = 0;
   let balanceController = new AbortController();
   let disposed = false;
@@ -45,9 +46,9 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
     button.style.display = needsKey ? "none" : "";
     row.querySelector<HTMLAnchorElement>("[data-vrata-top-up]")!.hidden = needsKey;
     const hasConnectedHost = hosts.some((host) => host.status === "connected");
-    const pendingLabel = hostId || discovering ? "Баланс…" : hasConnectedHost ? "Выберите машину" : "Нет подключённых машин";
+    const pendingLabel = hostId || discovering ? "Баланс…" : hasConnectedHost ? "Выберите машину" : "Подключаемся…";
     const pendingTitle = hostId || discovering ? "Получаем баланс Врата AI"
-      : hasConnectedHost ? "Выберите машину для просмотра баланса" : "Подключите машину с настроенным ключом Врата AI";
+      : hasConnectedHost ? "Выберите машину для просмотра баланса" : "Ожидаем подключения bb, чтобы загрузить баланс Врата AI";
     const label = state?.status === "ok" ? formatRubles((BigInt(state.spendable) + BigInt(state.reserved)).toString())
       : state?.status === "error" || hostsError ? "Баланс недоступен" : state?.status === "unconfigured" ? "Ключ не настроен" : pendingLabel;
     const title = state?.status === "ok"
@@ -67,7 +68,7 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
     // Avoid needless DOM mutations: the observer also sees changes inside our rows.
     if (button.lastElementChild?.textContent !== label) button.lastElementChild!.textContent = label;
     button.title = title;
-    button.disabled = busy || !hostId;
+    button.disabled = busy;
     const selectedIndex = hosts.findIndex((host) => host.id === hostId);
     const computer = hosts.length > 1 && selectedIndex >= 0 ? `, ${hostLabel(hosts[selectedIndex]!, selectedIndex)}` : "";
     button.setAttribute("aria-label", `Врата AI${computer}: ${label}. Обновить баланс`);
@@ -132,7 +133,7 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
   }
 
   async function refresh(): Promise<void> {
-    if (disposed || !hostId) return;
+    if (disposed || (!hostId && !automaticHost)) return;
     const epoch = requestEpoch;
     window.clearTimeout(timer);
     if (busy) { refreshPending = true; return; }
@@ -143,10 +144,16 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
     busy = true;
     rows.forEach(render);
     try {
+      if (!hostId || hostsError) await discoverHosts(epoch);
+      if (disposed || epoch !== requestEpoch || !hostId) return;
       const result = balanceResultSchema.parse(await rpc("balance", { hostId }, balanceController.signal));
       if (!disposed && epoch === requestEpoch) state = result;
     } catch {
-      if (!disposed && epoch === requestEpoch) state = { status: "error", message: "Не удалось обновить баланс Врата AI. Повторите попытку." };
+      if (!disposed && epoch === requestEpoch) {
+        discovering = false;
+        if (!hostId) hostsError = true;
+        else state = { status: "error", message: "Не удалось обновить баланс Врата AI. Повторите попытку." };
+      }
     } finally {
       if (!disposed && epoch === requestEpoch) {
         busy = false;
@@ -177,6 +184,7 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
   }
 
   function selectHost(value: string): void {
+    automaticHost = false;
     hostId = value;
     discovering = false;
     requestEpoch++;
@@ -200,11 +208,13 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
   window.addEventListener("focus", onRefresh);
   window.addEventListener("online", onRefresh);
   document.addEventListener("visibilitychange", onRefresh);
-  void rpc("listHosts", null, controller.signal).then(async (result) => {
-    if (disposed) return;
+  async function discoverHosts(epoch: number): Promise<void> {
+    const result = await rpc("listHosts", null, balanceController.signal);
+    if (disposed || epoch !== requestEpoch) return;
     hosts = configurationContract.listHosts.output.parse(result);
+    hostsError = false;
+    for (const row of rows.values()) row.querySelector("select")!.options.length = 1;
     rows.forEach(render);
-    const epoch = requestEpoch;
     const connected = hosts.filter((host) => host.status === "connected");
     let selected = connected[0]?.id ?? "";
     for (const host of connected) {
@@ -218,13 +228,10 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
         if (disposed || epoch !== requestEpoch) return;
       }
     }
-    selectHost(selected);
-  }).catch(() => {
-    if (disposed) return;
-    hostsError = true;
+    hostId = selected;
     discovering = false;
-    rows.forEach(render);
-  });
+  }
+  onRefresh();
 
   function dispose(): void {
     if (disposed) return;

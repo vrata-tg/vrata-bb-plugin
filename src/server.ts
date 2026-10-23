@@ -51,7 +51,8 @@ export default function plugin(bb: BbPluginApi): void {
         const config = await host.call("saveCredentials", { apiKey, baseUrl }, { hostId: machine.id, signal });
         signal.throwIfAborted();
         if (!config.configured) throw new Error("Host did not confirm configuration");
-        refreshProvider();
+        await refreshProvider();
+        signal.throwIfAborted();
         notify();
         return { hostId: machine.id, hostName: machine.name, ...config };
       } catch {
@@ -63,7 +64,8 @@ export default function plugin(bb: BbPluginApi): void {
         const machine = await resolveTarget({ kind: "host", hostId });
         const config = await host.call("deleteCredentials", null, { hostId: machine.id, signal });
         signal.throwIfAborted();
-        refreshProvider();
+        await refreshProvider();
+        signal.throwIfAborted();
         notify();
         return { hostId: machine.id, hostName: machine.name, ...config };
       } catch {
@@ -139,8 +141,10 @@ export default function plugin(bb: BbPluginApi): void {
     models: { scope: "host" },
   }); }
   let provider = registerProvider();
-  function refreshProvider(): void {
+  async function refreshProvider(): Promise<void> {
     provider.dispose();
     provider = registerProvider();
+    // SDK 0.4.34 re-registration clears server caches but does not notify pickers.
+    await bb.sdk.system.reloadConfig();
   }
 }

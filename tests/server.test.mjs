@@ -11,6 +11,7 @@ function serverMock(t, {
   call = async (method) => method === "balance" ? { status: "unconfigured" }
     : method === "deleteCredentials" ? { configured: false, baseUrl: "https://api.vrata.tg" } : configured,
   environmentId = "thread-environment",
+  reloadConfig = async () => {},
   interaction = { id: "setup", threadId: "waiting-thread", status: "pending", providerId: "vrata", payload: { kind: "bb-plugin/api-key", data: {} } },
 } = {}) {
   const methods = new Map();
@@ -25,6 +26,7 @@ function serverMock(t, {
   ];
   let registrations = 0;
   let providerDisposals = 0;
+  const pickerRefreshes = [];
   const dispose = () => { for (const disposer of disposers.splice(0).reverse()) disposer(); };
   const bb = {
     pluginId: "bb-plugin",
@@ -40,6 +42,8 @@ function serverMock(t, {
       }),
     },
     sdk: {
+      subscribe: () => () => {},
+      system: { reloadConfig: async () => { pickerRefreshes.push(registrations); await reloadConfig(); return { ok: true }; } },
       hosts: {
         list: async () => machines,
         get: async ({ hostId }) => {
@@ -70,7 +74,7 @@ function serverMock(t, {
   plugin(bb);
   t.after(dispose);
   return {
-    calls, lookups, machines, dispose, interactionAnswers,
+    calls, lookups, machines, dispose, interactionAnswers, pickerRefreshes,
     get registrations() { return registrations; },
     get providerDisposals() { return providerDisposals; },
     async rpc(name, input) {
@@ -97,6 +101,7 @@ test("registration and host listing never read central settings or contact a hos
   assert.deepEqual(mock.calls, []);
   assert.deepEqual(mock.lookups, []);
   assert.equal(mock.registrations, 1);
+  assert.deepEqual(mock.pickerRefreshes, []);
 });
 
 test("onboarding resolves thread → environment → host and rejects an app-supplied override", async (t) => {
@@ -111,6 +116,7 @@ test("onboarding resolves thread → environment → host and rejects an app-sup
   assert.doesNotMatch(JSON.stringify(result), /synthetic-key|apiKey/);
   assert.equal(mock.registrations, 2);
   assert.equal(mock.providerDisposals, 1);
+  assert.deepEqual(mock.pickerRefreshes, [2]);
 });
 
 test("target failure never falls back to another working host or exposes host errors", async (t) => {
@@ -154,6 +160,7 @@ test("read, balance and delete use only the explicit host; only mutations invali
   ]);
   assert.equal(mock.registrations, 3);
   assert.equal(mock.providerDisposals, 2);
+  assert.deepEqual(mock.pickerRefreshes, [2, 3]);
   subscription.close();
   assert.equal((await subscription.reader.read()).done, true);
 });
@@ -184,6 +191,18 @@ test("unavailable balance returns a static error and never tries another host", 
   assert.equal(result.status, "error");
   assert.doesNotMatch(result.message, /synthetic-key|private balance detail/);
   assert.deepEqual(mock.calls.map(({ hostId }) => hostId), ["target"]);
+});
+
+test("credential acknowledgement waits for picker refresh and rejects a late result after disposal", async (t) => {
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  const mock = serverMock(t, { reloadConfig: async () => { started.resolve(); await release.promise; } });
+  const pending = assert.rejects(mock.rpc("saveCredentials", { ...draft, target: hostTarget }), safeError);
+  await started.promise;
+  mock.dispose();
+  release.resolve();
+  await pending;
 });
 
 test("setup page reads and answers only a pending interaction owned by this plugin and provider", async (t) => {

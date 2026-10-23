@@ -6,6 +6,7 @@ export function registerBalanceEvents(bb: BbPluginApi): () => void {
   let disposed = false;
 
   function notify(): void { for (const client of clients) client.send(); }
+  bb.onDispose(bb.sdk.subscribe({ event: "host:changed", callback: notify }));
   bb.events.on("thread.idle", ({ thread }) => { if (thread.providerId === "vrata") notify(); });
   bb.events.on("thread.failed", ({ thread }) => { if (thread.providerId === "vrata") notify(); });
   bb.http.route("GET", "/balance-events", (context) => {
