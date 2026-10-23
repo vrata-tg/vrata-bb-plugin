@@ -1,0 +1,63 @@
+name: Release
+run-name: Release ${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'New version (X.X.X, for example 0.1.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Check npm authentication
+        run: npm whoami > /dev/null
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Bump version
+        run: node scripts/prepare-release.mjs
+      - run: npm install --global bb-app@0.41.0
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+      - name: Push release commit and tag
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package.json package-lock.json
+          git commit -m "chore: release v$RELEASE_VERSION"
+          git tag "v$RELEASE_VERSION"
+          git push --atomic origin HEAD:refs/heads/main "refs/tags/v$RELEASE_VERSION"
+          for ref in refs/heads/main "refs/tags/v$RELEASE_VERSION"; do
+            test "$(git ls-remote origin "$ref" | cut -f1)" = "$(git rev-parse HEAD)"
+          done
+      - name: Publish to npm
+        run: npm publish --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Create GitHub Release
+        run: gh release create "v$RELEASE_VERSION" --verify-tag --title "v$RELEASE_VERSION" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

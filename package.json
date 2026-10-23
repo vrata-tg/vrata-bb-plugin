@@ -1,11 +1,19 @@
 {
-  "name": "bb-plugin-vrata",
+  "name": "@vrata-ai/bb-plugin",
   "version": "0.1.0",
   "type": "module",
   "imports": {
     "#vrata-pi-runtime": "./packaging/pi/runtime.js"
   },
   "description": "Врата AI provider for bb with an embedded Pi agent runtime",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vrata-tg/vrata-bb-plugin.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "engines": {
     "bb": ">=0.41",
     "bbPluginSdk": ">=0.4.34",
