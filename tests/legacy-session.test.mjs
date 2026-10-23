@@ -37,7 +37,7 @@ test("legacy import uses the embedded SessionManager, preserves content and fina
   assert.deepEqual(context.model, { provider: "vrata.tg", modelId: "gpt-6-luna" });
   assert.equal(context.thinkingLevel, "off");
   assert.equal(await readFile(originalPath, "utf8"), original);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  if (process.platform !== "win32") assert.equal((await stat(path)).mode & 0o777, 0o600);
   await writeFile(originalPath, "malformed source after successful migration");
   assert.equal(await ensureLegacySession(args), path);
   assert.equal(await readFile(path, "utf8"), bytes);
