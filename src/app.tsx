@@ -80,7 +80,7 @@ function CredentialsForm({ target, onConfigured }: { target: Target; onConfigure
   return (
     <form onSubmit={(event) => void onSubmit(event)} style={{ display: "grid", gap: 12, maxWidth: 440 }}>
       {!configuration && <span>Загружаем настройки…</span>}
-      {configuration && <span role="status">{configuration.configured ? "Врата AI подключена" : "Добавьте ключ, чтобы начать"}</span>}
+      {configuration && <span role="status">{configuration.configured ? "Ключ подключён" : "Добавьте ключ, чтобы начать"}</span>}
       {!(onConfigured && saved) && <a className="underline underline-offset-2" href="https://vrata.tg/bot" target="_blank" rel="noopener noreferrer">Получить ключ в боте Врата AI ↗</a>}
       {!(onConfigured && saved) && <>
         <label style={{ display: "grid", gap: 6 }}>Ключ API
