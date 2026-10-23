@@ -51,8 +51,8 @@ jobs:
           for ref in refs/heads/main "refs/tags/v$RELEASE_VERSION"; do
             test "$(git ls-remote origin "$ref" | cut -f1)" = "$(git rev-parse HEAD)"
           done
-      - name: Publish to npm
-        run: npm publish --ignore-scripts
+      - name: Stage npm package
+        run: npm stage publish --ignore-scripts
       - name: Create GitHub Release
         run: gh release create "v$RELEASE_VERSION" --verify-tag --title "v$RELEASE_VERSION" --generate-notes
         env:
