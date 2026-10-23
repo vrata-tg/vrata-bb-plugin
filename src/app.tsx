@@ -26,6 +26,7 @@ function CredentialsForm({ target, onConfigured }: { target: Target; onConfigure
     void rpc.call("getConfiguration", { target }).then((result) => {
       if (cancelled) return;
       setConfiguration(result);
+      if (onConfigured && result.configured) setSaved(true);
     }, () => {
       if (!cancelled) setError("Не удалось загрузить настройки. Попробуйте открыть страницу заново.");
     });
@@ -100,10 +101,9 @@ function CredentialsForm({ target, onConfigured }: { target: Target; onConfigure
   );
 }
 
-function SetupRedirect({ interaction }: PluginPendingInteractionProps) {
+function KeySetupLink({ interaction }: PluginPendingInteractionProps) {
   const navigate = useBbNavigate();
   const subPath = `thread/${interaction.threadId}/${interaction.id}`;
-  useEffect(() => { navigate.toPluginPanel("setup", { subPath, replace: true }); }, [navigate, subPath]);
   return <button className="underline" onClick={() => navigate.toPluginPanel("setup", { subPath })}>Открыть подключение Врата AI</button>;
 }
 
@@ -168,8 +168,7 @@ function ThreadSetup({ threadId, interactionId }: { threadId: string; interactio
   }
   return <>
     {!interaction && !error && <span>Загружаем подключение…</span>}
-    {interaction?.kind === "api-key" && <CredentialsForm target={{ kind: "thread", threadId }} onConfigured={() => finish({ kind: "api-key", configured: true })} />}
-    {interaction?.kind === "model" && <ModelForm interaction={{ title: "Выберите модель", payload: interaction.data }} submit={(value) => finish({ kind: "model", ...value })} />}
+    {interaction && <CredentialsForm target={{ kind: "thread", threadId }} onConfigured={() => finish({ kind: "api-key", configured: true })} />}
     {error && <span role="alert">{error}</span>}
     {interaction && <button className="justify-self-start underline" disabled={cancelling} onClick={() => void cancel()}>Отмена</button>}
     {error && <button className="justify-self-start underline" onClick={() => navigate.toThread(threadId)}>Вернуться в тред</button>}
@@ -193,63 +192,11 @@ function VrataIcon({ className }: { className?: string }) {
   </svg>;
 }
 
-const reasoningLabels = {
-  none: "Выкл.", low: "Низкий", medium: "Средний",
-  high: "Высокий", xhigh: "Очень высокий", max: "Максимальный",
-} as const;
-type ReasoningLevel = keyof typeof reasoningLabels;
-
-function ModelForm({ interaction, submit }: { interaction: Pick<PluginPendingInteractionProps["interaction"], "title" | "payload">; submit: (value: { modelId: string; reasoningLevel: ReasoningLevel }) => Promise<void> }) {
-  const payload = interaction.payload;
-  const data = payload;
-  const rawModels = data && typeof data === "object" && !Array.isArray(data) && "models" in data ? data.models : null;
-  const models = Array.isArray(rawModels) ? rawModels.filter((value): value is { id: string; name: string; reasoningLevels: ReasoningLevel[] } =>
-    value !== null && typeof value === "object" && !Array.isArray(value) && typeof value.id === "string" && typeof value.name === "string"
-    && Array.isArray(value.reasoningLevels) && value.reasoningLevels.length > 0
-    && value.reasoningLevels.every((level) => typeof level === "string" && Object.hasOwn(reasoningLabels, level))) : [];
-  const [modelId, setModelId] = useState(models[0]?.id ?? "");
-  const [reasoningLevel, setReasoningLevel] = useState<ReasoningLevel>("medium");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const selected = models.find((model) => model.id === modelId);
-  const selectedReasoning = selected?.reasoningLevels.includes(reasoningLevel) ? reasoningLevel
-    : selected?.reasoningLevels.includes("medium") ? "medium" : selected?.reasoningLevels[0];
-
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selected || !selectedReasoning || busy) return;
-    setBusy(true);
-    setError("");
-    try { await submit({ modelId, reasoningLevel: selectedReasoning }); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось выбрать модель"); }
-    finally { setBusy(false); }
-  }
-
-  return (
-    <form onSubmit={(event) => void onSubmit(event)} style={{ display: "grid", gap: 12, maxWidth: 440 }}>
-      <strong>{interaction.title}</strong>
-      <label style={{ display: "grid", gap: 6 }}>Модель
-        <select value={modelId} onChange={(event) => setModelId(event.target.value)} disabled={busy} required>
-          {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
-        </select>
-      </label>
-      {selected && selected.reasoningLevels.some((level) => level !== "none") && <label style={{ display: "grid", gap: 6 }}>Рассуждения
-        <select value={selectedReasoning} onChange={(event) => setReasoningLevel(event.target.value as ReasoningLevel)} disabled={busy}>
-          {selected.reasoningLevels.map((level) => <option key={level} value={level}>{reasoningLabels[level]}</option>)}
-        </select>
-      </label>}
-      {error && <span role="alert" style={{ color: "#c43d3d" }}>{error}</span>}
-      <button className="rounded-md bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" type="submit" disabled={busy || !selected}>Продолжить запрос</button>
-    </form>
-  );
-}
-
 export default definePluginApp((app) => {
   app.slots.navPanel({ id: "setup", title: "Врата AI", icon: "KeyRound", path: "setup", component: SetupPage });
   app.slots.experimental_providerIcon({ providerId: "vrata", icon: VrataIcon });
   app.contentScripts.register({ id: "account-balance", mount: mountBalanceFooter });
   app.slots.settingsSection({ id: "machine-auth", title: "Врата AI", component: MachineSettings });
   app.slots.sidebarFooterAction({ id: "settings", title: "Настройки Врата AI", icon: "KeyRound", run: ({ openSettings }) => openSettings() });
-  app.slots.pendingInteraction({ id: "api-key", component: SetupRedirect });
-  app.slots.pendingInteraction({ id: "model", component: SetupRedirect });
+  app.slots.pendingInteraction({ id: "api-key", component: KeySetupLink });
 });

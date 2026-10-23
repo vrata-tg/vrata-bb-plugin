@@ -44,34 +44,6 @@ const hosts = [
 const metadata = (hostId, configured = false) => ({ hostId, hostName: hostId === "host-a" ? "Machine A" : "Machine B", configured, baseUrl: `https://${hostId}.example` });
 const interaction = (id = "a") => ({ id: `interaction-${id}`, threadId: `thread-${id}`, title: "Настройка", payload: null });
 
-test("model onboarding consumes the real slot payload and submits a supported effort after a model switch", async (t) => {
-  const { app, mount, mountThread, fireEvent, waitFor } = await setup(t);
-  const submitted = [];
-  const view = mountThread("model", {
-    interaction: {
-      id: "interaction-model", threadId: "thread-model", title: "Choose model",
-      payload: { models: [
-        { id: "reasoning", name: "Reasoning", reasoningLevels: ["none", "high", "max"] },
-        { id: "text", name: "Text", reasoningLevels: ["none"] },
-      ] },
-    },
-    submit: async (value) => { submitted.push(value); },
-  });
-  await waitFor(() => assert.equal(view.getAllByRole("combobox").length, 2));
-  const selectors = view.getAllByRole("combobox");
-  assert.equal(selectors.length, 2);
-  assert.deepEqual([...selectors[0].options].map(({ value }) => value), ["reasoning", "text"]);
-  fireEvent.change(selectors[1], { target: { value: "max" } });
-  fireEvent.click(view.getByRole("button", { name: "Продолжить запрос" }));
-  await waitFor(() => assert.deepEqual(submitted[0], { modelId: "reasoning", reasoningLevel: "max" }));
-  await waitFor(() => assert.equal(view.getByRole("button", { name: "Продолжить запрос" }).disabled, false));
-  fireEvent.change(selectors[0], { target: { value: "text" } });
-  assert.equal(view.getAllByRole("combobox").length, 1);
-  fireEvent.click(view.getByRole("button", { name: "Продолжить запрос" }));
-  await waitFor(() => assert.deepEqual(submitted[1], { modelId: "text", reasoningLevel: "none" }));
-});
-
-
 test("thread onboarding saves opaque credentials and URL only to its target, then continues once", async (t) => {
   const { app, mount, mountThread, fireEvent, waitFor } = await setup(t);
   const calls = [];
@@ -246,14 +218,41 @@ test("setup without a target asks which machine when several are connected", asy
   assert.equal(reads, 0);
 });
 
-test("pending key and model slots navigate to the full setup page without rendering forms", async (t) => {
-  const { app, mount, waitFor } = await setup(t);
-  for (const kind of ["api-key", "model"]) {
-    const view = mount(app.pendingInteractions.find(({ id }) => id === kind), { interaction: interaction(), submit: async () => {} });
-    await waitFor(() => assert.deepEqual(view.navigateCalls[0], { method: "toPluginPanel", path: "setup", options: { subPath: "thread/thread-a/interaction-a", replace: true } }));
-    assert.equal(view.container.querySelector("form"), null);
-    view.unmount();
-  }
+test("pending key setup only navigates after an explicit click", async (t) => {
+  const { app, mount, fireEvent, waitFor } = await setup(t);
+  const view = mount(app.pendingInteractions.find(({ id }) => id === "api-key"), { interaction: interaction(), submit: async () => {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(view.navigateCalls, []);
+  assert.equal(view.container.querySelector("form"), null);
+  fireEvent.click(view.getByRole("button", { name: "Открыть подключение Врата AI" }));
+  await waitFor(() => assert.deepEqual(view.navigateCalls, [{ method: "toPluginPanel", path: "setup", options: { subPath: "thread/thread-a/interaction-a" } }]));
+});
+
+test("unavailable setup returns to the thread without reopening its old interaction", async (t) => {
+  const { app, mount, fireEvent, waitFor } = await setup(t);
+  const page = mount(app.navPanels.find(({ id }) => id === "setup"), { subPath: "thread/thread-a/interaction-a" }, { rpc: {
+    getSetupInteraction: async () => { throw new Error("resolved"); },
+  } });
+  await waitFor(() => assert.ok(page.queryByRole("alert")));
+  fireEvent.click(page.getByRole("button", { name: "Вернуться в тред" }));
+  assert.deepEqual(page.navigateCalls, [{ method: "toThread", threadId: "thread-a" }]);
+  page.unmount();
+  const pending = mount(app.pendingInteractions.find(({ id }) => id === "api-key"), { interaction: interaction(), submit: async () => {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(pending.navigateCalls, []);
+});
+
+test("an already configured key step continues without entering or saving the key again", async (t) => {
+  const { mountThread, fireEvent, waitFor } = await setup(t);
+  const answers = [];
+  const view = mountThread("api-key", { interaction: interaction(), submit: async (value) => { answers.push(value); } }, { rpc: {
+    getConfiguration: async () => metadata("host-a", true),
+    saveCredentials: async () => { assert.fail("key is already stored on its host"); },
+  } });
+  await waitFor(() => assert.ok(view.queryByRole("button", { name: "Продолжить запрос" })));
+  assert.equal(view.queryByLabelText("Ключ API"), null);
+  fireEvent.click(view.getByRole("button", { name: "Продолжить запрос" }));
+  await waitFor(() => assert.deepEqual(answers, [{ configured: true }]));
 });
 
 test("one computer needs only a key, preserves its URL and puts the bot link first", async (t) => {
@@ -281,7 +280,8 @@ test("setup page cancellation returns to its thread, while a late response never
   const replies = [];
   const pending = Promise.withResolvers();
   const view = mount(app.navPanels.find(({ id }) => id === "setup"), { subPath: "thread/thread-a/interaction-a" }, { rpc: {
-    getSetupInteraction: async () => ({ id: "interaction-a", kind: "model", data: { models: [{ id: "m", name: "M", reasoningLevels: ["none"] }] } }),
+    getSetupInteraction: async () => ({ id: "interaction-a", kind: "api-key", data: {} }),
+    getConfiguration: async () => metadata("host-a"),
     submitSetupInteraction: async (input) => { replies.push(input); return pending.promise; },
   } });
   await waitFor(() => assert.ok(view.queryByRole("button", { name: "Отмена" })));

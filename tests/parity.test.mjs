@@ -350,7 +350,7 @@ test("raw / embedded native setters keep one child and preserve model and thinki
       assert.equal(f.saved().model.modelId, models.responses);
       assert.equal(f.saved().thinkingLevel, "high");
       await f.restart(); await f.resume(providerThreadId);
-      await f.turn("Restored selection", { model: "vrata-setup", reasoningLevel: undefined }); await f.boundary();
+      await f.turn("Restored selection", { model: undefined, reasoningLevel: undefined }); await f.boundary();
       assert.equal(f.saved().model.modelId, models.responses);
       assert.equal(f.saved().thinkingLevel, "high");
     }

@@ -30,7 +30,7 @@ for (const intent of ["interrupt", "release"]) {
     assert.match(JSON.stringify(f.saved().messages), /First input is retained/);
     assert.match(JSON.stringify(f.saved().messages), /Persisted partial response/);
     await f.resume(providerThreadId);
-    await f.turn("Continue after stop", { model: "vrata-setup", reasoningLevel: undefined });
+    await f.turn("Continue after stop", { model: undefined, reasoningLevel: undefined });
     assert.equal((await f.boundary()).status, "completed");
     assert.match(JSON.stringify(f.gateway.requests[1].body.messages), /First input is retained/);
   });
@@ -127,7 +127,7 @@ for (const consume of [false, true]) {
     assert.equal(f.messages.length, count);
     assert.equal(f.gateway.requests.length, requests);
     await f.resume(providerThreadId);
-    await f.turn("Resume after steer Stop", { model: "vrata-setup", reasoningLevel: undefined });
+    await f.turn("Resume after steer Stop", { model: undefined, reasoningLevel: undefined });
     assert.equal((await f.boundary()).status, "completed");
     const resumed = JSON.stringify(f.gateway.requests.at(-1).body.messages);
     if (consume) assert.match(resumed, /Consumed steer marker/);
@@ -197,7 +197,7 @@ test("legacy snapshot resumes through native Pi and reaches the next model reque
   const source = JSON.stringify({ messages: [{ role: "user", content: "Legacy history marker", timestamp: 1 }], selectedModelId: models.responses, selectedReasoningLevel: "high" });
   writeFileSync(join(legacyDir, `${id}.json`), source);
   await f.resume(id);
-  await f.turn("After migration", { model: "vrata-setup", reasoningLevel: undefined });
+  await f.turn("After migration", { model: undefined, reasoningLevel: undefined });
   assert.equal((await f.boundary()).status, "completed");
   const request = f.gateway.requests[0];
   assert.equal(request.path, "/v1/responses");
@@ -226,8 +226,8 @@ test("concurrent same-thread replacement leaves no generation after Stop", async
 
 test("explicit onClose rejects pending setup replies and new RPCs in the same live process", async (t) => {
   const f = await fixture(t, {}, { configured: false, closeHook: true });
-  await f.start({ options: { model: "vrata-setup" } });
-  await f.turn("Pending close input", { model: "vrata-setup" });
+  await f.start({ options: { model: undefined } });
+  await f.turn("Pending close input", { model: undefined });
   const key = await f.interaction("vrata/api-key");
   const beforeClose = existsSync(f.savedPath()) ? readFileSync(f.savedPath(), "utf8") : null;
   await f.rpc("fixture/onClose", {});

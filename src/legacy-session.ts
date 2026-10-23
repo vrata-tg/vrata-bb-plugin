@@ -51,7 +51,7 @@ async function importSnapshot(args: LegacySessionArgs, nativePath: string): Prom
     for (const message of saved.messages) session.appendMessage(message as Message);
     // Final selections follow history, so its last assistant cannot override them.
     const selectedModel = saved.selectedModelId;
-    if (selectedModel && selectedModel !== "vrata-setup") session.appendModelChange("vrata.tg", selectedModel);
+    if (selectedModel) session.appendModelChange("vrata.tg", selectedModel);
     if (saved.selectedReasoningLevel) session.appendThinkingLevelChange(saved.selectedReasoningLevel === "none" ? "off" : saved.selectedReasoningLevel);
     await mkdir(args.sessionDir, { recursive: true, mode: 0o700 });
     const jsonl = [session.getHeader(), ...session.getEntries()].map((entry) => JSON.stringify(entry)).join("\n") + "\n";

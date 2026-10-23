@@ -226,7 +226,7 @@ function sessionPath(providerThreadId: string): string {
   return resolvePiSessionFilePath({ sessionDir: runtime.sessionDir, threadId: providerThreadId });
 }
 function normalizeModel(model: string | undefined): string | undefined {
-  if (!model || model === "vrata-setup") return undefined;
+  if (!model) return undefined;
   return `${VRATA_PROVIDER_ID}/${model.replace(/^(?:vrata|vrata\.tg)\//, "")}`;
 }
 const generations = new Map<string, AbortController>();
@@ -474,16 +474,10 @@ function toPiSessionParams(
   });
 }
 
-const setupModel = {
-  id: "vrata-setup", model: "vrata-setup", displayName: "Настроить Врата AI",
-  description: "Добавьте ключ и выберите модель", isDefault: true,
-  supportedReasoningEfforts: [{ reasoningEffort: "none" as const, description: "Без рассуждений" }],
-  defaultReasoningEffort: "none" as const,
-};
 async function handleModelList(id: string | number, _params: { cwd?: string }): Promise<void> {
   const config = readConfig(requireDataDir());
   if (!config) {
-    sendResult(id, { models: [setupModel], selectedOnlyModels: [] });
+    sendResult(id, { models: [], selectedOnlyModels: [] });
     return;
   }
   try {
@@ -629,9 +623,7 @@ async function handleThreadConstruction(
     if (resumedSessionMissingCwd(providerThreadId)) throw new SetupError("Рабочая папка сохранённой сессии больше не существует");
   }
   const requestedModel = normalizeModel(params.model);
-  const normalized = { ...params, model: requestedModel,
-    ...(params.model === "vrata-setup" ? { thinkingLevel: undefined } : {}),
-  };
+  const normalized = { ...params, model: requestedModel };
   const config = readConfig(requireDataDir());
   if (!config || (!requestedModel && !existsSync(sessionPath(providerThreadId)))) {
     pendingConstruction.set(threadId, { providerThreadId, params: normalized, controller });
@@ -735,7 +727,7 @@ async function dispatchTurn(params: TurnStartParams): Promise<void> {
   if (!controller || !entry || entry.closeTask) throw new SetupError("Нет активной сессии Pi");
   const admission = entry.admission.then(async () => {
     checkCurrent(threadId, controller);
-    const options = buildPiTurnOptions(params.options.model === "vrata-setup" ? {} : params.options);
+    const options = buildPiTurnOptions(params.options);
     await entry.session.applyOptions({
       model: options.model ? resolvePiModel(options.model, entry.models) : undefined,
       thinkingLevel: options.thinkingLevel,
@@ -775,20 +767,12 @@ async function completeSetup(params: TurnStartParams, pending: PendingConstructi
     if (!config) throw new SetupError("Добавьте ключ Врата AI для машины треда в настройках плагина");
     let models = buildPiModels(await fetchModels(config, pending.controller.signal), config.baseUrl);
     checkCurrent(threadId, pending.controller);
-    let model = normalizeModel(params.options.model) ?? pending.params.model;
-    let thinking = params.options.model === "vrata-setup" ? pending.params.thinkingLevel
-      : buildPiTurnOptions(params.options).thinkingLevel ?? pending.params.thinkingLevel;
+    const model = normalizeModel(params.options.model) ?? pending.params.model;
+    const thinking = buildPiTurnOptions(params.options).thinkingLevel ?? pending.params.thinkingLevel;
     if (!model && !existsSync(sessionPath(pending.providerThreadId))) {
-      const answer = await requestInteraction(threadId, pending, { kind: "model", title: "Выберите модель Врата AI", data: {
-        models: models.map((entry) => ({ id: entry.id, name: entry.name, reasoningLevels: supportedReasoningLevels(entry) })),
-      } });
-      checkCurrent(threadId, pending.controller);
-      const selected = z.object({ kind: z.literal("request_answer"), value: z.object({ modelId: z.string(), reasoningLevel: z.enum(["none", "low", "medium", "high", "xhigh", "max"]) }) }).safeParse(answer);
-      if (!selected.success) throw new SetupError("Выберите модель и доступный уровень рассуждений");
-      model = normalizeModel(selected.data.value.modelId);
-      thinking = selected.data.value.reasoningLevel === "none" ? "off" : selected.data.value.reasoningLevel;
+      throw new SetupError("Выберите модель в меню модели bb рядом с полем ввода и отправьте запрос снова.");
     }
-    // A local credential change during either form must affect the configuration used to launch Pi.
+    // Host settings can change while the catalog request is in flight.
     const latestConfig = readConfig(requireDataDir());
     if (!latestConfig) throw new SetupError("Ключ Врата AI удалён. Повторите настройку.");
     if (latestConfig.apiKey !== config.apiKey || latestConfig.baseUrl !== config.baseUrl) {
@@ -807,7 +791,7 @@ async function completeSetup(params: TurnStartParams, pending: PendingConstructi
     await startPiThreadSession(threadId, pending.providerThreadId, { ...pending.params, model, thinkingLevel: thinking }, models, pending.controller);
     checkCurrent(threadId, pending.controller);
     // Setup already applied and validated the selected options to this child.
-    await dispatchTurn({ ...params, options: { ...params.options, model: "vrata-setup" } });
+    await dispatchTurn({ ...params, options: { ...params.options, model: undefined, reasoningLevel: undefined } });
   } catch (error) {
     if (!pending.controller.signal.aborted && generations.get(threadId) === pending.controller) {
       const message = safeError(error);

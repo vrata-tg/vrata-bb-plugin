@@ -265,7 +265,7 @@ export async function fixture(t, gatewayOptions = {}, { configured = true, setti
       turnCursor = events().length;
       return current;
     },
-    async resume(providerThreadId, selected = { model: "vrata-setup", reasoningLevel: undefined }) {
+    async resume(providerThreadId, selected = { model: undefined, reasoningLevel: undefined }) {
       current = { threadId: `thr_resumed_${++counter}`, providerThreadId };
       const result = await rpc("thread/resume", { ...current, cwd, instructionMode: "append", options: { ...options, ...selected } });
       turnCursor = events().length;

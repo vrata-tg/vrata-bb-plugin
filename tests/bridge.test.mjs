@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { join } from "node:path";
+import { unlinkSync } from "node:fs";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
 import host from "../dist/host.js";
 import { dynamicModel, fixture, models, sleep } from "./bridge-fixture.mjs";
@@ -34,22 +35,18 @@ test("native public catalog routes bare IDs through the registered Vrata provide
   assert.equal(f.spawned().length, 1, "The witness observes the actual session child");
 });
 
-test("first caller flow acknowledges start and turn before key/model forms, prompts once", async (t) => {
+test("key onboarding preserves the native model choice and prompts once without a model form", async (t) => {
   for (const pluginId of ["vrata", "bb-plugin"]) await t.test(pluginId, async (t) => {
     const f = await fixture(t, {}, { configured: false, pluginId });
-    await f.start({ options: { model: "vrata-setup" } });
+    await f.start({ options: { model: dynamicModel, reasoningLevel: "high" } });
     assert.equal(f.messages.some((m) => m.method === "interaction/request"), false);
-    const turn = await f.turn("Original setup input", { model: "vrata-setup" });
+    const turn = await f.turn("Original setup input", { model: dynamicModel, reasoningLevel: "high" });
     const key = await f.interaction(`${pluginId}/api-key`);
     assert.ok(f.messages.findIndex((m) => m.id === turn.id) < f.messages.indexOf(key));
     await saveLocalCredentials(t, f);
     f.reply(key.id, { kind: "request_answer", value: { configured: true } });
-    const model = await f.interaction(`${pluginId}/model`);
-    const choices = model.params.payload.data.models;
-    assert.ok(choices.some((choice) => choice.id === models.chat));
-    assert.ok(choices.some((choice) => choice.id === dynamicModel), "onboarding omitted the server-only model");
-    f.reply(model.id, { kind: "request_answer", value: { modelId: dynamicModel, reasoningLevel: "high" } });
     assert.equal((await f.boundary()).status, "completed");
+    assert.equal(f.messages.filter((m) => m.method === "interaction/request").length, 1);
     assert.equal(f.gateway.requests.length, 1);
     assert.equal(f.gateway.requests[0].body.model, dynamicModel);
     assert.equal(f.gateway.requests[0].path, "/v1/responses");
@@ -59,10 +56,29 @@ test("first caller flow acknowledges start and turn before key/model forms, prom
   });
 });
 
+test("native catalog reflects host key save, rotation and deletion without a setup model or generation", async (t) => {
+  const f = await fixture(t, {}, { configured: false, traceChildren: true });
+  assert.deepEqual((await f.rpc("model/list", {})).result, { models: [], selectedOnlyModels: [] });
+  await saveLocalCredentials(t, f);
+  const catalog = (await f.rpc("model/list", {})).result;
+  assert.ok(catalog.models.some(({ id }) => id === dynamicModel));
+  const high = catalog.models.find(({ id }) => id === dynamicModel);
+  assert.ok(high.supportedReasoningEfforts.some(({ reasoningEffort }) => reasoningEffort === "high"));
+  const next = await f.anotherGateway({ onModels({ response }) {
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: [{ id: "gpt-next-account" }] }));
+  } });
+  f.configure(next, "synthetic-key-b");
+  assert.deepEqual((await f.rpc("model/list", {})).result.models.map(({ id }) => id), ["gpt-next-account"]);
+  unlinkSync(join(f.dataDir, "credentials.json"));
+  assert.deepEqual((await f.rpc("model/list", {})).result, { models: [], selectedOnlyModels: [] });
+  assert.equal(f.gateway.requests.length + next.requests.length, 0);
+  assert.deepEqual(f.spawned(), []);
+});
+
 test("Stop during onboarding rejects a late form reply without starting Pi generation", async (t) => {
   const f = await fixture(t, {}, { configured: false });
-  await f.start({ options: { model: "vrata-setup" } });
-  await f.turn("Do not run after Stop", { model: "vrata-setup" });
+  await f.start({ options: { model: dynamicModel } });
+  await f.turn("Do not run after Stop", { model: dynamicModel });
   const key = await f.interaction("vrata/api-key");
   const stopped = await f.stop();
   const terminal = f.records().find(({ event }) => event.type === "turn/completed" && event.status === "interrupted");

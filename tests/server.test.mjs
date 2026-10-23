@@ -203,15 +203,5 @@ test("setup page reads and answers only a pending interaction owned by this plug
     await assert.rejects(other.rpc("submitSetupInteraction", { ...target, answer: { kind: "api-key", configured: true } }));
     assert.deepEqual(other.interactionAnswers, []);
   }
-  await assert.rejects(mock.rpc("submitSetupInteraction", { ...target, answer: { kind: "model", modelId: "m", reasoningLevel: "none" } }));
   assert.equal(mock.interactionAnswers.length, 2);
-});
-
-test("setup model page returns native choices and submits the choice through SDK", async (t) => {
-  const data = { models: [{ id: "m", name: "M", reasoningLevels: ["none"] }] };
-  const mock = serverMock(t, { interaction: { id: "setup", threadId: "waiting-thread", status: "pending", providerId: "vrata", payload: { kind: "bb-plugin/model", data } } });
-  const target = { threadId: "waiting-thread", interactionId: "setup" };
-  assert.deepEqual(await mock.rpc("getSetupInteraction", target), { id: "setup", kind: "model", data });
-  await mock.rpc("submitSetupInteraction", { ...target, answer: { kind: "model", modelId: "m", reasoningLevel: "none" } });
-  assert.deepEqual(mock.interactionAnswers, [{ ...target, value: { modelId: "m", reasoningLevel: "none" } }]);
 });
