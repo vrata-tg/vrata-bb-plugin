@@ -7,3 +7,8 @@
 ```bash
 bb plugin install npm:@vrata-ai/bb-plugin
 ```
+
+## Структура проекта
+
+Исходники плагина находятся в `src/`, включая интеграцию с Pi в `src/pi/`.
+Тесты — в `tests/`, скрипты сборки — в `scripts/`, упаковка рантайма — в `packaging/`.
