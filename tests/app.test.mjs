@@ -226,7 +226,7 @@ test("setup page from balance selects its target and saves the key on that machi
   assert.equal(view.getByRole("combobox").value, "host-b");
   fireEvent.change(view.getByLabelText("Ключ API"), { target: { value: "synthetic-setup" } });
   fireEvent.click(view.getByRole("button", { name: "Сохранить ключ" }));
-  await waitFor(() => assert.equal(view.getByRole("status").textContent, "Врата AI подключена"));
+  await waitFor(() => assert.equal(view.getByRole("button", { name: "Удалить ключ" }).disabled, false));
   assert.deepEqual(calls.map(([method, input]) => [method, method === "get" ? input : input.target]), [
     ["get", { kind: "host", hostId: "host-b" }], ["save", { kind: "host", hostId: "host-b" }],
   ]);
