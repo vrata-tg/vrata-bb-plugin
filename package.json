@@ -5,7 +5,7 @@
   "imports": {
     "#vrata-pi-runtime": "./packaging/pi/runtime.js"
   },
-  "description": "Врата AI provider for bb with an embedded Pi agent runtime",
+  "description": "Добавляет провайдера моделей Врата AI в bb",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/vrata-tg/vrata-bb-plugin.git"
@@ -21,7 +21,7 @@
   },
   "bb": {
     "name": "Врата AI",
-    "description": "Pi coding agent with Врата AI models. The first thread asks for your API key.",
+    "description": "Добавляет провайдера моделей Врата AI в bb.",
     "branding": {
       "icon": "./media/vrata.svg"
     },
