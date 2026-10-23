@@ -55,8 +55,8 @@ jobs:
           for ref in refs/heads/main "refs/tags/v$RELEASE_VERSION"; do
             test "$(git ls-remote origin "$ref" | cut -f1)" = "$(git rev-parse HEAD)"
           done
-      - name: Publish to npm
-        run: npm publish --ignore-scripts
+      - name: Stage npm package
+        run: npm stage publish --ignore-scripts
         # npm/cli#9969: token auth is needed until npm supports immutable OIDC subjects.
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
