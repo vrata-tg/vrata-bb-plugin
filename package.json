@@ -23,7 +23,7 @@
     "name": "Врата AI",
     "description": "Pi coding agent with Врата AI models. The first thread asks for your API key.",
     "branding": {
-      "icon": "Sparkles"
+      "icon": "./media/vrata.svg"
     },
     "server": "./src/server.ts",
     "app": "./src/app.tsx",
@@ -58,6 +58,7 @@
     "dist/*.meta.json",
     "src/",
     "packaging/pi/LICENSE",
-    "packaging/pi/NOTICE.md"
+    "packaging/pi/NOTICE.md",
+    "media/"
   ]
 }

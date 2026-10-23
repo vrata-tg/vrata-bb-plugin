@@ -11,12 +11,14 @@ function serverMock(t, {
   call = async (method) => method === "balance" ? { status: "unconfigured" }
     : method === "deleteCredentials" ? { configured: false, baseUrl: "https://api.vrata.tg" } : configured,
   environmentId = "thread-environment",
+  interaction = { id: "setup", threadId: "waiting-thread", status: "pending", providerId: "vrata", payload: { kind: "bb-plugin/api-key", data: {} } },
 } = {}) {
   const methods = new Map();
   const routes = new Map();
   const disposers = [];
   const calls = [];
   const lookups = [];
+  const interactionAnswers = [];
   const machines = [
     { id: "target", name: "Thread machine", status: "connected" },
     { id: "other", name: "Other machine", status: "disconnected" },
@@ -25,6 +27,7 @@ function serverMock(t, {
   let providerDisposals = 0;
   const dispose = () => { for (const disposer of disposers.splice(0).reverse()) disposer(); };
   const bb = {
+    pluginId: "bb-plugin",
     get settings() { throw new Error("Legacy central settings must remain inert"); },
     get background() { throw new Error("Credential synchronization must not run"); },
     hosts: {
@@ -46,7 +49,14 @@ function serverMock(t, {
           return machine;
         },
       },
-      threads: { get: async ({ threadId }) => { lookups.push(["thread", threadId]); return { environmentId }; } },
+      threads: {
+        get: async ({ threadId }) => { lookups.push(["thread", threadId]); return { environmentId }; },
+        stop: async ({ threadId }) => { interactionAnswers.push({ threadId, stopped: true }); },
+        interactions: {
+          get: async () => interaction,
+          respond: async (input) => { interactionAnswers.push(input); },
+        },
+      },
       environments: { get: async ({ environmentId }) => { lookups.push(["environment", environmentId]); return { hostId: "target" }; } },
     },
     rpc: { register: (contract, handlers) => {
@@ -60,7 +70,7 @@ function serverMock(t, {
   plugin(bb);
   t.after(dispose);
   return {
-    calls, lookups, machines, dispose,
+    calls, lookups, machines, dispose, interactionAnswers,
     get registrations() { return registrations; },
     get providerDisposals() { return providerDisposals; },
     async rpc(name, input) {
@@ -174,4 +184,34 @@ test("unavailable balance returns a static error and never tries another host", 
   assert.equal(result.status, "error");
   assert.doesNotMatch(result.message, /synthetic-key|private balance detail/);
   assert.deepEqual(mock.calls.map(({ hostId }) => hostId), ["target"]);
+});
+
+test("setup page reads and answers only a pending interaction owned by this plugin and provider", async (t) => {
+  const target = { threadId: "waiting-thread", interactionId: "setup" };
+  const mock = serverMock(t);
+  assert.deepEqual(await mock.rpc("getSetupInteraction", target), { id: "setup", kind: "api-key", data: {} });
+  await mock.rpc("submitSetupInteraction", { ...target, answer: { kind: "api-key", configured: true } });
+  assert.deepEqual(mock.interactionAnswers, [{ ...target, value: { configured: true } }]);
+  await mock.rpc("submitSetupInteraction", { ...target, answer: { kind: "cancel" } });
+  assert.deepEqual(mock.interactionAnswers[1], { threadId: target.threadId, stopped: true });
+  for (const change of [
+    { status: "resolved" }, { status: "cancelled" }, { threadId: "another-thread" },
+    { providerId: "another-provider" }, { payload: { kind: "another-plugin/api-key", data: {} } },
+  ]) {
+    const other = serverMock(t, { interaction: { id: "setup", threadId: "waiting-thread", status: "pending", providerId: "vrata", payload: { kind: "bb-plugin/api-key", data: {} }, ...change } });
+    await assert.rejects(other.rpc("getSetupInteraction", target));
+    await assert.rejects(other.rpc("submitSetupInteraction", { ...target, answer: { kind: "api-key", configured: true } }));
+    assert.deepEqual(other.interactionAnswers, []);
+  }
+  await assert.rejects(mock.rpc("submitSetupInteraction", { ...target, answer: { kind: "model", modelId: "m", reasoningLevel: "none" } }));
+  assert.equal(mock.interactionAnswers.length, 2);
+});
+
+test("setup model page returns native choices and submits the choice through SDK", async (t) => {
+  const data = { models: [{ id: "m", name: "M", reasoningLevels: ["none"] }] };
+  const mock = serverMock(t, { interaction: { id: "setup", threadId: "waiting-thread", status: "pending", providerId: "vrata", payload: { kind: "bb-plugin/model", data } } });
+  const target = { threadId: "waiting-thread", interactionId: "setup" };
+  assert.deepEqual(await mock.rpc("getSetupInteraction", target), { id: "setup", kind: "model", data });
+  await mock.rpc("submitSetupInteraction", { ...target, answer: { kind: "model", modelId: "m", reasoningLevel: "none" } });
+  assert.deepEqual(mock.interactionAnswers, [{ ...target, value: { modelId: "m", reasoningLevel: "none" } }]);
 });

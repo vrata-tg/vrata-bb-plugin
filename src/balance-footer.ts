@@ -2,6 +2,7 @@ import type { PluginContentScriptContext, PluginRpcResult } from "@get-bb/plugin
 import { balanceResultSchema, formatRubles, type BalanceResult } from "./balance.js";
 
 import { configurationContract } from "./contract.js";
+import { hostLabel } from "./host-label.js";
 
 const footerSelector = '[data-sidebar="footer"]';
 
@@ -24,10 +25,10 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
   function render(row: HTMLDivElement): void {
     const selector = row.querySelector("select")!;
     if (selector.options.length === 1 && hosts.length) {
-      for (const host of hosts) {
+      for (const [index, host] of hosts.entries()) {
         const option = document.createElement("option");
         option.value = host.id;
-        option.textContent = `${host.name}${host.status === "disconnected" ? " (не подключена)" : ""}`;
+        option.textContent = `${hostLabel(host, index)}${host.status === "disconnected" ? " (не подключён)" : ""}`;
         selector.append(option);
       }
     }
@@ -36,6 +37,13 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
     selector.value = hostId;
     selector.hidden = hosts.length <= 1;
     const button = row.querySelector("button")!;
+    const needsKey = state?.status === "unconfigured";
+    const setup = row.querySelector<HTMLAnchorElement>("[data-vrata-setup]")!;
+    setup.href = `/plugins/${encodeURIComponent(pluginId)}/setup/${encodeURIComponent(hostId)}`;
+    setup.style.display = needsKey ? "flex" : "none";
+    setup.title = "Подключить Врата AI";
+    button.style.display = needsKey ? "none" : "";
+    row.querySelector<HTMLAnchorElement>("[data-vrata-top-up]")!.hidden = needsKey;
     const hasConnectedHost = hosts.some((host) => host.status === "connected");
     const pendingLabel = hostId || discovering ? "Баланс…" : hasConnectedHost ? "Выберите машину" : "Нет подключённых машин";
     const pendingTitle = hostId || discovering ? "Получаем баланс Врата AI"
@@ -60,7 +68,9 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
     if (button.lastElementChild?.textContent !== label) button.lastElementChild!.textContent = label;
     button.title = title;
     button.disabled = busy || !hostId;
-    button.setAttribute("aria-label", `Врата AI, ${hosts.find((host) => host.id === hostId)?.name ?? "машина не выбрана"}: ${label}. Обновить баланс`);
+    const selectedIndex = hosts.findIndex((host) => host.id === hostId);
+    const computer = hosts.length > 1 && selectedIndex >= 0 ? `, ${hostLabel(hosts[selectedIndex]!, selectedIndex)}` : "";
+    button.setAttribute("aria-label", `Врата AI${computer}: ${label}. Обновить баланс`);
     button.setAttribute("aria-busy", String(busy));
   }
 
@@ -101,13 +111,18 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
         button.append(name, amount);
         button.addEventListener("click", onRefresh);
         const topUp = document.createElement("a");
+        topUp.dataset.vrataTopUp = "";
         topUp.href = "https://vrata.tg/bot";
         topUp.target = "_blank";
         topUp.rel = "noopener noreferrer";
         topUp.textContent = "Пополнить";
         topUp.title = "Пополнить баланс в боте Врата AI";
         topUp.className = "shrink-0 rounded-md border px-2 py-1.5 hover:bg-sidebar-accent focus-visible:outline focus-visible:outline-2";
-        line.append(button, topUp);
+        const setup = document.createElement("a");
+        setup.dataset.vrataSetup = "";
+        setup.textContent = "Добавить ключ Врата AI";
+        setup.className = "w-full items-center rounded-md border px-2 py-1.5 hover:bg-sidebar-accent focus-visible:outline focus-visible:outline-2";
+        line.append(button, topUp, setup);
         row.append(selector, line);
         rows.set(footer, row);
         render(row);

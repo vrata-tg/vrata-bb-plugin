@@ -156,7 +156,7 @@ export function jsonlChild(command, args, { cwd, env }) {
   };
 }
 
-export async function fixture(t, gatewayOptions = {}, { configured = true, settings = {}, closeHook = false, traceChildren = false } = {}) {
+export async function fixture(t, gatewayOptions = {}, { configured = true, settings = {}, closeHook = false, traceChildren = false, pluginId = "vrata" } = {}) {
   const root = mkdtempSync(join(tmpdir(), "vrata-native-test-"));
   const cwd = join(root, "workspace"), dataDir = join(root, "bridge-data"), home = join(root, "home");
   for (const path of [cwd, dataDir, home]) mkdirSync(path);
@@ -196,12 +196,12 @@ export async function fixture(t, gatewayOptions = {}, { configured = true, setti
   const launch = () => {
     collector = experimental_createBridgeDeltaEventCollector("vrata");
     eventRecords = []; messageCursor = 0; turnCursor = 0; requestId = undefined;
-    const spec = experimental_resolveProviderBridgeLaunch({ modulePath: resolve("dist/host.js"), pluginId: "vrata", cwd, dataDir });
+    const spec = experimental_resolveProviderBridgeLaunch({ modulePath: resolve("dist/host.js"), pluginId, cwd, dataDir });
     // Only the explicit lifecycle probe needs a direct onClose hook. Ordinary
     // integration and conformance always use the SDK worker above.
     const probe = `
       import { experimental_providerBridge as bridge } from ${JSON.stringify(new URL("../dist/host.js", import.meta.url).href)};
-      bridge.start(${JSON.stringify({ pluginId: "vrata", dataDir, tempDir: root })});
+      bridge.start(${JSON.stringify({ pluginId, dataDir, tempDir: root })});
       let buffer = "";
       process.stdin.setEncoding("utf8");
       process.stdin.on("data", chunk => {
