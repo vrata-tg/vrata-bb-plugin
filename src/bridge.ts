@@ -42,7 +42,7 @@ import {
   type InitializeResult,
   type ThreadDelta,
 } from "@get-bb/plugin-sdk/provider-bridge";
-import type { ImageContent } from "@earendil-works/pi-ai";
+import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
 import { createPiDeltaTranslator } from "./pi/events.js";
 import {
   buildPiSessionParams,
@@ -52,7 +52,7 @@ import {
 import { BB_PI_EXTENSION_SOURCE } from "./pi/tools.js";
 import { preparePiRuntime } from "./pi-runtime.js";
 import { ensureLegacySession } from "./legacy-session.js";
-import { guideModels, readConfig, VRATA_PROVIDER_ID, supportedReasoningLevels, fetchModels, buildPiAvailableModels } from "./vrata.js";
+import { buildPiModels, readConfig, VRATA_PROVIDER_ID, supportedReasoningLevels, fetchModels, buildPiAvailableModels } from "./vrata.js";
 import { createCredentialRedactor } from "./pi/redact.js";
 import type { PiRuntimeOptions } from "./pi/child.js";
 import {
@@ -172,6 +172,7 @@ interface BridgeEventNotification {
 
 interface ThreadSession {
   session: PiRpcSession;
+  models: Model<Api>[];
   closeTask?: Promise<string | undefined>;
   providerThreadId: string;
   cwd: string;
@@ -212,9 +213,13 @@ async function requireRuntime() {
   runtime = prepared;
   return prepared;
 }
-function childRuntime(): PiRuntimeOptions {
+function childRuntime(models: Model<Api>[]): PiRuntimeOptions {
   if (!runtime) throw new SetupError("Рантайм Врата AI не инициализирован");
-  return { launch: { command: process.execPath, args: [runtime.rpcEntry] }, env: runtime.env, extensionPath: runtime.extensionPath };
+  return {
+    launch: { command: process.execPath, args: [runtime.rpcEntry] },
+    env: { ...runtime.env, VRATA_MODEL_CATALOG: JSON.stringify(models) },
+    extensionPath: runtime.extensionPath,
+  };
 }
 function sessionPath(providerThreadId: string): string {
   if (!runtime) throw new SetupError("Рантайм Врата AI не инициализирован");
@@ -474,11 +479,17 @@ const setupModel = {
   defaultReasoningEffort: "none" as const,
 };
 async function handleModelList(id: string | number, _params: { cwd?: string }): Promise<void> {
-  if (!readConfig(requireDataDir())) {
+  const config = readConfig(requireDataDir());
+  if (!config) {
     sendResult(id, { models: [setupModel], selectedOnlyModels: [] });
     return;
   }
-  sendResult(id, buildPiAvailableModels());
+  try {
+    const catalog = await fetchModels(config);
+    sendResult(id, buildPiAvailableModels(buildPiModels(catalog, config.baseUrl)));
+  } catch {
+    sendError(id, -32000, "Не удалось получить каталог моделей Врата AI");
+  }
 }
 async function handleProviderHealth(id: string | number, _params: { cwd?: string }): Promise<void> {
   await requireRuntime();
@@ -501,11 +512,9 @@ async function handleProviderHealth(id: string | number, _params: { cwd?: string
   } });
 }
 
-function resolvePiModel(model: string): { provider: string; id: string } {
+function resolvePiModel(model: string, models: Model<Api>[]): { provider: string; id: string } {
   const id = model.replace(/^(?:vrata|vrata\.tg)\//, "");
-  if (!guideModels("https://api.vrata.tg").some((candidate) => candidate.id === id)) {
-    throw new SetupError("Выбранная модель недоступна");
-  }
+  if (!models.some((candidate) => candidate.id === id)) throw new SetupError("Выбранная модель недоступна");
   return { provider: VRATA_PROVIDER_ID, id };
 }
 
@@ -513,12 +522,13 @@ function buildSessionOptions(args: {
   params: PiSessionParams;
   providerThreadId: string;
   threadId: string;
+  models: Model<Api>[];
 }): PiRpcSessionOptions {
   return {
-    runtime: childRuntime(),
+    runtime: childRuntime(args.models),
     cwd: args.params.cwd,
     ...(args.params.model
-      ? { model: resolvePiModel(args.params.model) }
+      ? { model: resolvePiModel(args.params.model, args.models) }
       : {}),
     sessionFilePath: sessionPath(args.providerThreadId),
     sessionDir: runtime!.sessionDir,
@@ -545,6 +555,7 @@ async function startPiThreadSession(
   threadId: string,
   providerThreadId: string,
   params: PiSessionParams,
+  models: Model<Api>[],
   controller: AbortController,
 ): Promise<void> {
   checkCurrent(threadId, controller);
@@ -552,11 +563,12 @@ async function startPiThreadSession(
   checkCurrent(threadId, controller);
   const entry: ThreadSession = {
     providerThreadId,
+    models,
     cwd: persistedSessionCwd(providerThreadId) ?? params.cwd,
     translator: createPiDeltaTranslator(),
     admission: Promise.resolve(),
     session: new PiRpcSession(
-      buildSessionOptions({ params, providerThreadId, threadId }),
+      buildSessionOptions({ params, providerThreadId, threadId, models }),
       (toolName, args) => isCurrentSession(threadId, entry)
         ? forwardToolCall({ arguments: args, providerThreadId, scope: entry, threadId, toolName })
         : Promise.resolve({ content: "Thread session not found", isError: true }),
@@ -618,12 +630,17 @@ async function handleThreadConstruction(
   const normalized = { ...params, model: requestedModel,
     ...(params.model === "vrata-setup" ? { thinkingLevel: undefined } : {}),
   };
-  if (!readConfig(requireDataDir()) || (!requestedModel && !existsSync(sessionPath(providerThreadId)))) {
+  const config = readConfig(requireDataDir());
+  if (!config || (!requestedModel && !existsSync(sessionPath(providerThreadId)))) {
     pendingConstruction.set(threadId, { providerThreadId, params: normalized, controller });
     sendThreadSessionResult(id, threadId, providerThreadId);
     return;
   }
-  await startPiThreadSession(threadId, providerThreadId, normalized, controller);
+  const catalog = await fetchModels(config, controller.signal);
+  checkCurrent(threadId, controller);
+  const models = buildPiModels(catalog, config.baseUrl);
+  if (requestedModel) resolvePiModel(requestedModel, models);
+  await startPiThreadSession(threadId, providerThreadId, normalized, models, controller);
   checkCurrent(threadId, controller);
   sendThreadSessionResult(id, threadId, providerThreadId);
 }
@@ -718,7 +735,7 @@ async function dispatchTurn(params: TurnStartParams): Promise<void> {
     checkCurrent(threadId, controller);
     const options = buildPiTurnOptions(params.options.model === "vrata-setup" ? {} : params.options);
     await entry.session.applyOptions({
-      model: options.model ? resolvePiModel(options.model) : undefined,
+      model: options.model ? resolvePiModel(options.model, entry.models) : undefined,
       thinkingLevel: options.thinkingLevel,
     });
     checkCurrent(threadId, controller);
@@ -754,11 +771,12 @@ async function completeSetup(params: TurnStartParams, pending: PendingConstructi
     }
     let config = readConfig(requireDataDir());
     if (!config) throw new SetupError("Добавьте ключ Врата AI для машины треда в настройках плагина");
+    let models = buildPiModels(await fetchModels(config, pending.controller.signal), config.baseUrl);
+    checkCurrent(threadId, pending.controller);
     let model = normalizeModel(params.options.model) ?? pending.params.model;
     let thinking = params.options.model === "vrata-setup" ? pending.params.thinkingLevel
       : buildPiTurnOptions(params.options).thinkingLevel ?? pending.params.thinkingLevel;
     if (!model && !existsSync(sessionPath(pending.providerThreadId))) {
-      const models = guideModels(config.baseUrl);
       const answer = await requestInteraction(threadId, pending, { kind: "vrata/model", title: "Выберите модель Врата AI", data: {
         models: models.map((entry) => ({ id: entry.id, name: entry.name, reasoningLevels: supportedReasoningLevels(entry) })),
       } });
@@ -769,17 +787,22 @@ async function completeSetup(params: TurnStartParams, pending: PendingConstructi
       thinking = selected.data.value.reasoningLevel === "none" ? "off" : selected.data.value.reasoningLevel;
     }
     // A local credential change during either form must affect the configuration used to launch Pi.
-    config = readConfig(requireDataDir());
-    if (!config) throw new SetupError("Ключ Врата AI удалён. Повторите настройку.");
+    const latestConfig = readConfig(requireDataDir());
+    if (!latestConfig) throw new SetupError("Ключ Врата AI удалён. Повторите настройку.");
+    if (latestConfig.apiKey !== config.apiKey || latestConfig.baseUrl !== config.baseUrl) {
+      config = latestConfig;
+      models = buildPiModels(await fetchModels(config, pending.controller.signal), config.baseUrl);
+      checkCurrent(threadId, pending.controller);
+    }
     if (model) {
-      const candidate = guideModels(config.baseUrl).find((entry) => `${entry.provider}/${entry.id}` === model);
+      const candidate = models.find((entry) => `${entry.provider}/${entry.id}` === model);
       if (!candidate) throw new SetupError("Выбранная модель недоступна");
       const levels = supportedReasoningLevels(candidate);
       const requested = thinking === "off" ? "none" : thinking;
       if (requested && !levels.includes(requested)) throw new SetupError("Модель не поддерживает выбранный уровень рассуждений");
     }
     checkCurrent(threadId, pending.controller);
-    await startPiThreadSession(threadId, pending.providerThreadId, { ...pending.params, model, thinkingLevel: thinking }, pending.controller);
+    await startPiThreadSession(threadId, pending.providerThreadId, { ...pending.params, model, thinkingLevel: thinking }, models, pending.controller);
     checkCurrent(threadId, pending.controller);
     // Setup already applied and validated the selected options to this child.
     await dispatchTurn({ ...params, options: { ...params.options, model: "vrata-setup" } });

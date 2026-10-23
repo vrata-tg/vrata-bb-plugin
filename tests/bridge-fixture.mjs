@@ -15,6 +15,7 @@ export const models = {
   responses: "gpt-6.1-sol",
   anthropic: "claude-sonnet-5-5",
 };
+export const dynamicModel = "server-added-model";
 export const options = {
   model: models.chat, reasoningLevel: "none", permissionMode: "full",
   permissionScope: "full", approvalReviewer: null, permissionEscalation: null,
@@ -86,7 +87,8 @@ export async function createGateway({ onChat, onResponses, onAnthropic, onModels
       const path = new URL(request.url, "http://loopback").pathname;
       if (path === "/v1/models") {
         catalogRequests.push(request);
-        const respond = () => response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ object: "list", data: Object.values(models).map((id) => ({ id })) }));
+        const ids = request.headers["anthropic-version"] ? [models.anthropic] : [models.chat, models.responses, dynamicModel];
+        const respond = () => response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ object: "list", data: ids.map((id) => ({ id })) }));
         if (onModels) await onModels({ request, response, respond }); else respond();
         return;
       }
@@ -301,10 +303,10 @@ export async function fixture(t, gatewayOptions = {}, { configured = true, setti
       const cli = join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))), "bundle", "cli.js");
       const referencePackage = JSON.parse(readFileSync(join(dirname(dirname(cli)), "..", "package.json"), "utf8"));
       assert.equal(referencePackage.version, "1.3.0", "Raw parity oracle must use pinned Pi 1.3.0");
-      const { guideModels } = await import("../dist/tests/vrata.js");
+      const { knownModelMetadata } = await import("../dist/tests/vrata.js");
       const extensionPath = join(root, "raw-guide.mjs");
       // Ordinary user guide registration: no candidate auth/redaction/stream wrapper.
-      writeFileSync(extensionPath, `export default function(pi) { pi.registerProvider("vrata.tg", ${JSON.stringify({ baseUrl: gateway.url + "/v1", apiKey: "synthetic-key-a", models: guideModels(gateway.url) })}); }`);
+      writeFileSync(extensionPath, `export default function(pi) { pi.registerProvider("vrata.tg", ${JSON.stringify({ baseUrl: gateway.url + "/v1", apiKey: "synthetic-key-a", models: knownModelMetadata(gateway.url) })}); }`);
       const child = jsonlChild(process.execPath, [cli, "--mode", "rpc", "--session", sessionFile, "--session-dir", runtime.sessionDir, "--extension", extensionPath, ...(model ? ["--model", model.includes("/") ? model : `vrata.tg/${model}`] : []), ...(thinking ? ["--thinking", thinking] : []), ...extraArgs], { cwd, env });
       children.push(child);
       await child.request("get_state", {}, true);

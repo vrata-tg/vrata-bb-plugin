@@ -5,13 +5,15 @@ import { join } from "node:path";
 import test from "node:test";
 import { createAgentSessionServices, createAgentSessionFromServices, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { VRATA_EXTENSION_SOURCE, VRATA_PI_SETTINGS } from "../dist/tests/vrata-extension.js";
+import { knownModelMetadata } from "../dist/tests/vrata.js";
 import { createGateway, answer, chunk, finish, models } from "./bridge-fixture.mjs";
 
 async function nativeSession(t, config, model = models.chat, thinkingLevel = "off") {
   const dir = mkdtempSync(join(tmpdir(), "vrata-extension-"));
   const credentials = join(dir, "credentials.json"), extension = join(dir, "vrata.mjs");
-  const previous = process.env.VRATA_CREDENTIALS_PATH;
+  const previous = process.env.VRATA_CREDENTIALS_PATH, previousCatalog = process.env.VRATA_MODEL_CATALOG;
   process.env.VRATA_CREDENTIALS_PATH = credentials;
+  process.env.VRATA_MODEL_CATALOG = JSON.stringify(knownModelMetadata(config.baseUrl));
   const configure = (value) => {
     writeFileSync(credentials + ".next", JSON.stringify(value), { mode: 0o600 });
     renameSync(credentials + ".next", credentials);
@@ -24,6 +26,8 @@ async function nativeSession(t, config, model = models.chat, thinkingLevel = "of
     session?.dispose();
     if (previous === undefined) delete process.env.VRATA_CREDENTIALS_PATH;
     else process.env.VRATA_CREDENTIALS_PATH = previous;
+    if (previousCatalog === undefined) delete process.env.VRATA_MODEL_CATALOG;
+    else process.env.VRATA_MODEL_CATALOG = previousCatalog;
     rmSync(dir, { recursive: true, force: true });
   });
   const settingsManager = SettingsManager.inMemory({
