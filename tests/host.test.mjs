@@ -83,7 +83,7 @@ test("save validates only model GETs, preserves an opaque key and atomically rot
     const result = await f.harness.experimental_call("saveCredentials", { apiKey, baseUrl: endpoint.baseUrl });
     assert.deepEqual(result, { configured: true, baseUrl: `${endpoint.baseUrl}/v1` });
     assert.deepEqual(await f.read(), { apiKey, baseUrl: `${endpoint.baseUrl}/v1` });
-    assert.equal((await stat(f.credentialsPath)).mode & 0o777, 0o600);
+    if (process.platform !== "win32") assert.equal((await stat(f.credentialsPath)).mode & 0o777, 0o600);
     assert.deepEqual(await readdir(f.bridgeDir), ["credentials.json"]);
     assert.equal(endpoint.requests.length, 2);
     assert.ok(endpoint.requests.every(({ method, path, authorization }) => method === "GET" && path === "/v1/models" && authorization === `Bearer ${apiKey}`));
@@ -160,7 +160,7 @@ test("newer save wins over an older held validation including key and URL", { ti
   api.release();
   await pending;
   assert.deepEqual(await f.read(), { ...replacement, baseUrl: `${latest.baseUrl}/v1` });
-  assert.equal((await stat(f.credentialsPath)).mode & 0o777, 0o600);
+  if (process.platform !== "win32") assert.equal((await stat(f.credentialsPath)).mode & 0o777, 0o600);
   assert.deepEqual(await readdir(f.bridgeDir), ["credentials.json"]);
 });
 

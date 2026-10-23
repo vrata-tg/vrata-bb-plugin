@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { createInterface } from "node:readline";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { experimental_createBridgeJsonRpcTestHarness } from "@get-bb/plugin-sdk/provider-bridge/testing";
@@ -56,7 +56,7 @@ async function nativeRuntimeProbe(t) {
   assert.equal(context.thinkingLevel, "low");
 
   mkdirSync(join(root, "bin"));
-  symlinkSync("/bin/bash", join(root, "bin/bash"));
+  if (process.platform !== "win32") symlinkSync("/bin/bash", join(root, "bin/bash"));
   writeFileSync(join(root, "wide.png"), Buffer.from(images[1].data, "base64"));
   writeFileSync(join(root, "provider.ts"), String.raw`
 import { writeFileSync } from "node:fs";
@@ -94,7 +94,9 @@ export default function (pi) {
   const child = spawn(process.execPath, ["--no-global-search-paths", runtime.rpcEntry,
     "--extension", join(root, "provider.ts"), "--provider", "packaging-test", "--model", "synthetic",
     "--tools", "read,write,bash,codemode", "--session-dir", join(root, "sessions")], {
-    cwd: root, env: { PATH: join(root, "bin"), PI_CODING_AGENT_DIR: join(root, "agent"), PI_TELEMETRY: "off",
+    cwd: root, env: { SystemRoot: process.env.SystemRoot, ProgramFiles: process.env.ProgramFiles,
+      "ProgramFiles(x86)": process.env["ProgramFiles(x86)"],
+      PATH: join(root, "bin"), PI_CODING_AGENT_DIR: join(root, "agent"), PI_TELEMETRY: "off",
       PACKAGING_TRACE: join(root, "trace.json") }, stdio: ["pipe", "pipe", "pipe"],
   });
   const closed = once(child, "exit");
@@ -152,7 +154,7 @@ async function probe(cleanup, pluginRoot = fileURLToPath(new URL("../", import.m
   copyFileSync(hostFile, join(root, "host.mjs"));
   mkdirSync(join(root, "data"));
   mkdirSync(join(root, "bin"));
-  symlinkSync("/bin/bash", join(root, "bin/bash"));
+  if (process.platform !== "win32") symlinkSync("/bin/bash", join(root, "bin/bash"));
   process.env.PATH = join(root, "bin");
   process.env.PI_TELEMETRY = "off";
   for (const fixture of images) writeFileSync(join(root, fixture.name), Buffer.from(fixture.data, "base64"));
@@ -268,16 +270,18 @@ if (process.argv[2] === "--probe") {
     const root = mkdtempSync(join(tmpdir(), "vrata-npm-package-"));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const exec = promisify(execFile);
+    const npm = process.platform === "win32" ? process.execPath : "npm";
+    const npmArgs = process.platform === "win32" ? [join(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js")] : [];
     const { NODE_TEST_CONTEXT: _testContext, ...env } = process.env;
     // The suite follows npm run build; prepack itself is verified by the release preparation.
-    const { stdout } = await exec("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", root], {
+    const { stdout } = await exec(npm, [...npmArgs, "pack", "--ignore-scripts", "--json", "--pack-destination", root], {
       cwd: fileURLToPath(new URL("../", import.meta.url)), env,
     });
     const [pack] = JSON.parse(stdout);
     assert.ok(pack.files.every(({ path }) => !/^(tests|scripts|node_modules)\//.test(path)
       && !path.endsWith(".map") && !path.endsWith(".br") && !path.startsWith("dist/tests/")),
     "The published package must not duplicate runtime assets or ship development output");
-    await exec("npm", ["install", "--prefix", root, "--ignore-scripts", "--omit=dev", "--omit=optional",
+    await exec(npm, [...npmArgs, "install", "--prefix", root, "--ignore-scripts", "--omit=dev", "--omit=optional",
       "--no-audit", "--no-fund", join(root, pack.filename)], { env, timeout: 60000 });
     const installed = join(root, "node_modules", pack.name);
     const manifest = JSON.parse(readFileSync(join(installed, "package.json"), "utf8"));
