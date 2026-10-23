@@ -45,7 +45,6 @@ export const onboardingContract = defineRpcContract({
   submitSetupInteraction: {
     input: setupTarget.extend({ answer: z.discriminatedUnion("kind", [
       z.object({ kind: z.literal("api-key"), configured: z.literal(true) }),
-      z.object({ kind: z.literal("model"), modelId: z.string().min(1), reasoningLevel: z.enum(["none", "low", "medium", "high", "xhigh", "max"]) }),
       z.object({ kind: z.literal("cancel") }),
     ]) }),
     output: z.null(),

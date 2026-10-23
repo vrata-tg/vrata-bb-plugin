@@ -2,17 +2,6 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { accountContract, configurationContract, credentialsContract, onboardingContract, type ConfigurationTarget } from "./contract.js";
 import { registerBalanceEvents } from "./balance-events.js";
 
-const setupModel = {
-  id: "vrata-setup",
-  model: "vrata-setup",
-  displayName: "Ввести ключ и выбрать модель",
-  routeProviderId: "vrata",
-  description: "Открыть подключение Врата AI",
-  supportedReasoningEfforts: [{ reasoningEffort: "none" as const, description: "Без рассуждений" }],
-  defaultReasoningEffort: "none" as const,
-  isDefault: true,
-};
-
 export default function plugin(bb: BbPluginApi): void {
   const host = bb.hosts.experimental_client({ contract: credentialsContract });
   const controller = new AbortController();
@@ -116,8 +105,7 @@ export default function plugin(bb: BbPluginApi): void {
       if (answer.kind === "cancel") await bb.sdk.threads.stop({ threadId });
       else {
         if (answer.kind !== interaction.kind) throw new Error("Шаг настройки изменился. Откройте его заново из треда.");
-        if (answer.kind === "api-key") await bb.sdk.threads.interactions.respond({ ...target, value: { configured: true } });
-        else await bb.sdk.threads.interactions.respond({ ...target, value: { modelId: answer.modelId, reasoningLevel: answer.reasoningLevel } });
+        await bb.sdk.threads.interactions.respond({ ...target, value: { configured: true } });
       }
       return null;
     },
@@ -151,7 +139,7 @@ export default function plugin(bb: BbPluginApi): void {
       permissionModes: ["full"],
       reasoningLevels: ["none", "low", "medium", "high", "xhigh", "max"],
     },
-    models: { fallback: [setupModel], scope: "host" },
+    models: { scope: "host" },
   }); }
   let provider = registerProvider();
   function refreshProvider(): void {
