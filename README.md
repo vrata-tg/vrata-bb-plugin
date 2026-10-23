@@ -8,25 +8,13 @@
 bb plugin install npm:@vrata-ai/bb-plugin
 ```
 
-## Публикация в npm
+## Релиз
 
-В GitHub Actions secrets репозитория добавьте `NPM_TOKEN` — granular access token
-с правом публикации в scope `@vrata-ai` и включённым **Bypass 2FA** для CI.
-Это требуется и для первой публикации пакета. Токен должен оставаться действующим.
-См. [настройку npm-токенов](https://docs.npmjs.com/creating-and-viewing-access-tokens).
+Откройте **Actions → Release → Run workflow**, выберите `main` и введите новую
+версию без `v`, например `0.1.1`. Workflow сам обновит версию, выполнит проверки,
+запушит коммит и тег `vX.X.X`, опубликует `@vrata-ai/bb-plugin` в npm и создаст
+GitHub Release.
 
-Для релиза обновите версию через `npm version X.X.X --no-git-tag-version`,
-закоммитьте оба манифеста и влейте PR в `main`. Затем на релизном коммите:
-
-```bash
-git switch main
-git pull --ff-only origin main
-git tag "v$(node -p 'require("./package.json").version')"
-git push origin "v$(node -p 'require("./package.json").version')"
-```
-
-Тег должен быть новым: существующий `v0.1.0` повторно использовать нельзя.
-Workflow `release.yml` проверяет формат `vX.X.X`, совпадение версии в обоих
-манифестах и наличие коммита в `origin/main`. После typecheck, сборки и тестов
-публикует `@vrata-ai/bb-plugin` в публичный npm. На PR и push в `main` выполняются
-только проверки. Публикация использует уже проверенную сборку без повторного `prepack`.
+Один раз добавьте в Actions secrets `NPM_TOKEN` —
+[npm-токен](https://docs.npmjs.com/creating-and-viewing-access-tokens)
+с правом публикации в `@vrata-ai` и включённым **Bypass 2FA**.
