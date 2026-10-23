@@ -1,4 +1,4 @@
-import { guideModels, VRATA_PROVIDER_ID } from "./vrata.js";
+import { VRATA_PROVIDER_ID } from "./vrata.js";
 
 export const VRATA_PI_SETTINGS = {
   httpIdleTimeoutMs: 3_900_000,
@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
 
 const providerId = ${JSON.stringify(VRATA_PROVIDER_ID)};
-const guide = ${JSON.stringify(guideModels("https://api.vrata.tg/v1"))};
+const models = JSON.parse(process.env.VRATA_MODEL_CATALOG || "[]");
 
 function readSnapshot() {
   try {
@@ -65,7 +65,7 @@ export default function vrataExtension(pi) {
   pi.registerProvider(providerId, {
     baseUrl: snapshot?.baseUrl ?? "https://api.vrata.tg/v1",
     apiKey: "vrata-bb-runtime-auth",
-    models: guide.map((model) => requestModel(model, snapshot)),
+    models: models.map((model) => requestModel(model, snapshot)),
   });
 
   pi.on("session_start", (_event, ctx) => {

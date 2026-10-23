@@ -54,7 +54,7 @@ test("catalog discovery retains the successful protocol when the other fails", {
   });
   const models = await fetchModels(config);
   assert.equal(models.length, 1);
-  assert.deepEqual(models, [{ id: "mock-code" }]);
+  assert.deepEqual(models, [{ id: "mock-code", protocol: "openai" }]);
 });
 
 test("catalog parse errors return a fixed diagnostic without raw response text", { timeout: 5000 }, async (t) => {

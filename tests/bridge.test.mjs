@@ -3,7 +3,7 @@ import test from "node:test";
 import { join } from "node:path";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
 import host from "../dist/host.js";
-import { fixture, models, sleep } from "./bridge-fixture.mjs";
+import { dynamicModel, fixture, models, sleep } from "./bridge-fixture.mjs";
 
 async function saveLocalCredentials(t, f) {
   const harness = experimental_createHostEntryHarness(host, {
@@ -21,14 +21,16 @@ test("native public catalog routes bare IDs through the registered Vrata provide
   const f = await fixture(t, {}, { traceChildren: true });
   const { result } = await f.rpc("model/list", { cwd: f.cwd });
   assert.ok(result.models.some((model) => model.id === models.chat));
+  assert.ok(result.models.some((model) => model.id === dynamicModel), "server-only model was omitted from the catalog");
   assert.ok(result.models.every((model) => !model.id.includes("/")));
   assert.ok(result.models.every((model) => model.routeProviderId === "vrata"));
   assert.equal(f.gateway.requests.length, 0, "Discovery cannot generate a model response");
   assert.deepEqual(f.spawned(), [], "Catalog metadata needs no Pi child");
-  await f.start();
-  await f.turn("Bare model ID reaches native Pi");
+  await f.start({ options: { model: dynamicModel, reasoningLevel: "high" } });
+  await f.turn("Bare server model ID reaches native Pi", { model: dynamicModel, reasoningLevel: "high" });
   assert.equal((await f.boundary()).status, "completed");
-  assert.equal(f.gateway.requests[0].body.model, models.chat);
+  assert.equal(f.gateway.requests[0].body.model, dynamicModel);
+  assert.equal(f.gateway.requests[0].path, "/v1/responses");
   assert.equal(f.spawned().length, 1, "The witness observes the actual session child");
 });
 
@@ -44,9 +46,12 @@ test("first caller flow acknowledges start and turn before key/model forms, prom
   const model = await f.interaction("vrata/model");
   const choices = model.params.payload.data.models;
   assert.ok(choices.some((choice) => choice.id === models.chat));
-  f.reply(model.id, { kind: "request_answer", value: { modelId: models.responses, reasoningLevel: "high" } });
+  assert.ok(choices.some((choice) => choice.id === dynamicModel), "onboarding omitted the server-only model");
+  f.reply(model.id, { kind: "request_answer", value: { modelId: dynamicModel, reasoningLevel: "high" } });
   assert.equal((await f.boundary()).status, "completed");
   assert.equal(f.gateway.requests.length, 1);
+  assert.equal(f.gateway.requests[0].body.model, dynamicModel);
+  assert.equal(f.gateway.requests[0].path, "/v1/responses");
   assert.equal(f.gateway.requests[0].body.reasoning.effort, "high");
   assert.equal(f.gateway.requests[0].body.input.filter((m) => m.role === "user" && JSON.stringify(m.content).includes("Original setup input")).length, 1);
   assert.equal(f.deltas().filter((d) => d.kind === "input.accepted").length, 1);
