@@ -116,7 +116,7 @@ test("closing onboarding ignores a late save and never continues the old interac
   assert.equal(submitted, 0);
 });
 
-test("settings explicitly select a machine, rotate and delete its local key without reading it back", async (t) => {
+test("settings select the only connected machine, rotate and delete its local key without reading it back", async (t) => {
   const { app, mount, fireEvent, waitFor } = await setup(t);
   let opened = 0;
   app.sidebarFooterActions.find(({ id }) => id === "settings").run({ openSettings: () => { opened++; } });
@@ -129,9 +129,7 @@ test("settings explicitly select a machine, rotate and delete its local key with
     deleteCredentials: async (input) => { calls.push(["delete", input]); return metadata(input.hostId); },
   } });
   await waitFor(() => assert.equal(view.getByRole("combobox").options.length, 3));
-  assert.equal(view.getByRole("combobox").value, "");
-  assert.equal(calls.length, 0);
-  fireEvent.change(view.getByRole("combobox"), { target: { value: "host-a" } });
+  assert.equal(view.getByRole("combobox").value, "host-a");
   await waitFor(() => assert.equal(view.getByLabelText("Ключ API").disabled, false));
   assert.equal(view.getByLabelText("Ключ API").value, "");
   fireEvent.change(view.getByLabelText("Ключ API"), { target: { value: "$OPAQUE" } });
@@ -155,7 +153,7 @@ test("switching machines clears secrets and ignores late configuration, save and
   const deleting = Promise.withResolvers();
   let aReads = 0;
   const view = mount(app.settingsSections.find(({ id }) => id === "machine-auth"), {}, { rpc: {
-    listHosts: async () => hosts,
+    listHosts: async () => hosts.map((host) => ({ ...host, status: "connected" })),
     getConfiguration: async ({ target }) => target.hostId === "host-a" && ++aReads === 1 ? loading.promise : metadata(target.hostId, target.hostId === "host-a"),
     saveCredentials: async () => saving.promise,
     deleteCredentials: async () => deleting.promise,
@@ -207,4 +205,36 @@ test("credential failure uses a safe message and cannot continue onboarding", as
   await waitFor(() => assert.ok(view.getByRole("alert")));
   assert.equal(view.getByRole("alert").textContent.includes("PRIVATE"), false);
   assert.equal(submitted, 0);
+});
+
+test("setup page from balance selects its target and saves the key on that machine", async (t) => {
+  const { app, mount, fireEvent, waitFor } = await setup(t);
+  const calls = [];
+  const view = mount(app.navPanels.find(({ id }) => id === "setup"), { subPath: "host-b" }, { rpc: {
+    listHosts: async () => hosts,
+    getConfiguration: async ({ target }) => { calls.push(["get", target]); return metadata(target.hostId); },
+    saveCredentials: async (input) => { calls.push(["save", input]); return metadata(input.target.hostId, true); },
+  } });
+  await waitFor(() => assert.equal(view.getByLabelText("Ключ API").disabled, false));
+  assert.equal(view.getByRole("combobox").value, "host-b");
+  fireEvent.change(view.getByLabelText("Ключ API"), { target: { value: "synthetic-setup" } });
+  fireEvent.click(view.getByRole("button", { name: "Сохранить ключ" }));
+  await waitFor(() => assert.equal(view.getByRole("status").textContent, "Ключ сохранён на этой машине"));
+  assert.deepEqual(calls.map(([method, input]) => [method, method === "get" ? input : input.target]), [
+    ["get", { kind: "host", hostId: "host-b" }], ["save", { kind: "host", hostId: "host-b" }],
+  ]);
+  assert.equal(view.getByLabelText("Ключ API").value, "");
+});
+
+test("setup without a target asks which machine when several are connected", async (t) => {
+  const { app, mount, waitFor } = await setup(t);
+  let reads = 0;
+  const view = mount(app.navPanels.find(({ id }) => id === "setup"), { subPath: "" }, { rpc: {
+    listHosts: async () => hosts.map((host) => ({ ...host, status: "connected" })),
+    getConfiguration: async () => { reads++; return metadata("host-a"); },
+  } });
+  await waitFor(() => assert.equal(view.getByRole("combobox").options.length, 3));
+  assert.equal(view.getByRole("combobox").value, "");
+  assert.equal(view.queryByLabelText("Ключ API"), null);
+  assert.equal(reads, 0);
 });

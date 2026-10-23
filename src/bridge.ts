@@ -262,7 +262,8 @@ function requestInteraction(threadId: string, pending: PendingConstruction, payl
   return new Promise<unknown>((resolve, reject) => {
     pendingInteractions.set(id, { resolve, reject });
     send({ jsonrpc: "2.0", id, method: "interaction/request", params: {
-      threadId, providerThreadId: pending.providerThreadId, turnId: null, payload,
+      threadId, providerThreadId: pending.providerThreadId, turnId: null,
+      payload: { ...payload, kind: `${pluginId}/${payload.kind}` },
     } });
   }).finally(() => {
     pendingInteractions.delete(id);
@@ -271,6 +272,7 @@ function requestInteraction(threadId: string, pending: PendingConstruction, payl
 }
 
 const sessions = new Map<string, ThreadSession>();
+let pluginId: string;
 const { forwardToolCall, handleToolCallResponse, resolvePendingToolCalls } =
   createPendingToolCallTracker({ sendToolCall: send });
 
@@ -763,7 +765,7 @@ async function completeSetup(params: TurnStartParams, pending: PendingConstructi
   try {
     checkCurrent(threadId, pending.controller);
     if (!readConfig(requireDataDir())) {
-      const answer = await requestInteraction(threadId, pending, { kind: "vrata/api-key", title: "Ключ API Врата AI", data: {} });
+      const answer = await requestInteraction(threadId, pending, { kind: "api-key", title: "Ключ API Врата AI", data: {} });
       checkCurrent(threadId, pending.controller);
       if (!z.object({ kind: z.literal("request_answer"), value: z.object({ configured: z.literal(true) }) }).safeParse(answer).success) {
         throw new SetupError("Ключ Врата AI не сохранён. Повторите настройку.");
@@ -777,7 +779,7 @@ async function completeSetup(params: TurnStartParams, pending: PendingConstructi
     let thinking = params.options.model === "vrata-setup" ? pending.params.thinkingLevel
       : buildPiTurnOptions(params.options).thinkingLevel ?? pending.params.thinkingLevel;
     if (!model && !existsSync(sessionPath(pending.providerThreadId))) {
-      const answer = await requestInteraction(threadId, pending, { kind: "vrata/model", title: "Выберите модель Врата AI", data: {
+      const answer = await requestInteraction(threadId, pending, { kind: "model", title: "Выберите модель Врата AI", data: {
         models: models.map((entry) => ({ id: entry.id, name: entry.name, reasoningLevels: supportedReasoningLevels(entry) })),
       } });
       checkCurrent(threadId, pending.controller);
@@ -994,6 +996,7 @@ async function shutdown(): Promise<void> {
 export const experimental_providerBridge = experimental_defineProviderBridge({
   handleLine,
   start: (context) => {
+    pluginId = context.pluginId;
     dataDir = context.dataDir;
     redactor = createCredentialRedactor(join(dataDir, "credentials.json"));
     bridgeClosed = false;

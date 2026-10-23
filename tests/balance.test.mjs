@@ -440,3 +440,27 @@ test("switching footer hosts aborts the old fetch and ignores its late balance a
   assert.equal(ui.timers.size, 0);
   assert.equal(requests.length, 3);
 });
+
+test("missing-key balance opens setup for its machine and becomes a refresh control after saving", async (t) => {
+  let result = { status: "unconfigured" };
+  const ui = client(t, async () => rpcResponse(result), {
+    getConfiguration: () => ({ configured: false, baseUrl: "https://api.vrata.tg" }),
+  });
+  await settle();
+  const row = ui.document.querySelector("[data-vrata-balance]");
+  const link = row.querySelector("[data-vrata-setup]");
+  assert.equal(link.textContent, "Добавить ключ Врата AI");
+  assert.equal(link.getAttribute("href"), "/plugins/vrata/setup/host-a");
+  assert.equal(link.style.display, "flex");
+  assert.equal(row.querySelector("button").style.display, "none");
+  assert.equal(row.querySelector("[data-vrata-top-up]").hidden, true);
+  ui.select("host-b");
+  await settle();
+  assert.equal(link.getAttribute("href"), "/plugins/vrata/setup/host-b");
+  result = balance;
+  ui.sources[0].refresh();
+  await settle();
+  assert.equal(link.style.display, "none");
+  assert.equal(row.querySelector("button").style.display, "");
+  assert.equal(row.querySelector("[data-vrata-top-up]").hidden, false);
+});

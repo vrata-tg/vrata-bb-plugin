@@ -36,6 +36,13 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
     selector.value = hostId;
     selector.hidden = hosts.length <= 1;
     const button = row.querySelector("button")!;
+    const needsKey = state?.status === "unconfigured";
+    const setup = row.querySelector<HTMLAnchorElement>("[data-vrata-setup]")!;
+    setup.href = `/plugins/${encodeURIComponent(pluginId)}/setup/${encodeURIComponent(hostId)}`;
+    setup.style.display = needsKey ? "flex" : "none";
+    setup.title = `Добавить ключ Врата AI на машине ${hosts.find((host) => host.id === hostId)?.name ?? ""}`;
+    button.style.display = needsKey ? "none" : "";
+    row.querySelector<HTMLAnchorElement>("[data-vrata-top-up]")!.hidden = needsKey;
     const hasConnectedHost = hosts.some((host) => host.status === "connected");
     const pendingLabel = hostId || discovering ? "Баланс…" : hasConnectedHost ? "Выберите машину" : "Нет подключённых машин";
     const pendingTitle = hostId || discovering ? "Получаем баланс Врата AI"
@@ -101,13 +108,18 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
         button.append(name, amount);
         button.addEventListener("click", onRefresh);
         const topUp = document.createElement("a");
+        topUp.dataset.vrataTopUp = "";
         topUp.href = "https://vrata.tg/bot";
         topUp.target = "_blank";
         topUp.rel = "noopener noreferrer";
         topUp.textContent = "Пополнить";
         topUp.title = "Пополнить баланс в боте Врата AI";
         topUp.className = "shrink-0 rounded-md border px-2 py-1.5 hover:bg-sidebar-accent focus-visible:outline focus-visible:outline-2";
-        line.append(button, topUp);
+        const setup = document.createElement("a");
+        setup.dataset.vrataSetup = "";
+        setup.textContent = "Добавить ключ Врата AI";
+        setup.className = "w-full items-center rounded-md border px-2 py-1.5 hover:bg-sidebar-accent focus-visible:outline focus-visible:outline-2";
+        line.append(button, topUp, setup);
         row.append(selector, line);
         rows.set(footer, row);
         render(row);

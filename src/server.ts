@@ -99,7 +99,7 @@ export default function plugin(bb: BbPluginApi): void {
   function registerProvider() { return bb.providers.register({
     id: "vrata",
     displayName: "Врата AI (Pi)",
-    icon: "Sparkles",
+    icon: "./media/vrata.svg",
     family: "pi",
     strings: {
       signInHint: "Первый запрос в треде откроет форму для ключа Врата AI.",

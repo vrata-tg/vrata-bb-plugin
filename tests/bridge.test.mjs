@@ -35,26 +35,28 @@ test("native public catalog routes bare IDs through the registered Vrata provide
 });
 
 test("first caller flow acknowledges start and turn before key/model forms, prompts once", async (t) => {
-  const f = await fixture(t, {}, { configured: false });
-  await f.start({ options: { model: "vrata-setup" } });
-  assert.equal(f.messages.some((m) => m.method === "interaction/request"), false);
-  const turn = await f.turn("Original setup input", { model: "vrata-setup" });
-  const key = await f.interaction("vrata/api-key");
-  assert.ok(f.messages.findIndex((m) => m.id === turn.id) < f.messages.indexOf(key));
-  await saveLocalCredentials(t, f);
-  f.reply(key.id, { kind: "request_answer", value: { configured: true } });
-  const model = await f.interaction("vrata/model");
-  const choices = model.params.payload.data.models;
-  assert.ok(choices.some((choice) => choice.id === models.chat));
-  assert.ok(choices.some((choice) => choice.id === dynamicModel), "onboarding omitted the server-only model");
-  f.reply(model.id, { kind: "request_answer", value: { modelId: dynamicModel, reasoningLevel: "high" } });
-  assert.equal((await f.boundary()).status, "completed");
-  assert.equal(f.gateway.requests.length, 1);
-  assert.equal(f.gateway.requests[0].body.model, dynamicModel);
-  assert.equal(f.gateway.requests[0].path, "/v1/responses");
-  assert.equal(f.gateway.requests[0].body.reasoning.effort, "high");
-  assert.equal(f.gateway.requests[0].body.input.filter((m) => m.role === "user" && JSON.stringify(m.content).includes("Original setup input")).length, 1);
-  assert.equal(f.deltas().filter((d) => d.kind === "input.accepted").length, 1);
+  for (const pluginId of ["vrata", "bb-plugin"]) await t.test(pluginId, async (t) => {
+    const f = await fixture(t, {}, { configured: false, pluginId });
+    await f.start({ options: { model: "vrata-setup" } });
+    assert.equal(f.messages.some((m) => m.method === "interaction/request"), false);
+    const turn = await f.turn("Original setup input", { model: "vrata-setup" });
+    const key = await f.interaction(`${pluginId}/api-key`);
+    assert.ok(f.messages.findIndex((m) => m.id === turn.id) < f.messages.indexOf(key));
+    await saveLocalCredentials(t, f);
+    f.reply(key.id, { kind: "request_answer", value: { configured: true } });
+    const model = await f.interaction(`${pluginId}/model`);
+    const choices = model.params.payload.data.models;
+    assert.ok(choices.some((choice) => choice.id === models.chat));
+    assert.ok(choices.some((choice) => choice.id === dynamicModel), "onboarding omitted the server-only model");
+    f.reply(model.id, { kind: "request_answer", value: { modelId: dynamicModel, reasoningLevel: "high" } });
+    assert.equal((await f.boundary()).status, "completed");
+    assert.equal(f.gateway.requests.length, 1);
+    assert.equal(f.gateway.requests[0].body.model, dynamicModel);
+    assert.equal(f.gateway.requests[0].path, "/v1/responses");
+    assert.equal(f.gateway.requests[0].body.reasoning.effort, "high");
+    assert.equal(f.gateway.requests[0].body.input.filter((m) => m.role === "user" && JSON.stringify(m.content).includes("Original setup input")).length, 1);
+    assert.equal(f.deltas().filter((d) => d.kind === "input.accepted").length, 1);
+  });
 });
 
 test("Stop during onboarding rejects a late form reply without starting Pi generation", async (t) => {

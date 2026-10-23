@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { definePluginApp, useRpc, type PluginPendingInteractionProps, type PluginRpcResult, type StandardSchemaV1InferInput } from "@get-bb/plugin-sdk/app";
+import { definePluginApp, useRpc, type PluginNavPanelProps, type PluginPendingInteractionProps, type PluginRpcResult, type StandardSchemaV1InferInput } from "@get-bb/plugin-sdk/app";
 import type { configurationContract } from "./contract.js";
 import { mountBalanceFooter } from "./balance-footer.js";
 
@@ -85,22 +85,25 @@ function CredentialsForm({ target, onConfigured }: { target: Target; onConfigure
       {configuration ? <span>Машина: <strong>{configuration.hostName}</strong></span> : <span>Загружаем настройку машины…</span>}
       {configuration && <span role="status">{configuration.configured ? "Ключ сохранён на этой машине" : "Ключ на этой машине не настроен"}</span>}
       {!(onConfigured && saved) && <>
-        <label style={{ display: "grid", gap: 6 }}>Адрес API
-          <input type="url" autoComplete="off" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} disabled={busy || !configuration} required />
-        </label>
         <label style={{ display: "grid", gap: 6 }}>Ключ API
           <input autoComplete="off" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)}
             placeholder={configuration?.configured ? "Новый ключ Врата AI" : "Ключ Врата AI"} disabled={busy || !configuration} required maxLength={4096}
             style={{ width: "100%", padding: 8, border: "1px solid currentColor", borderRadius: 6, background: "transparent", color: "inherit" }} />
         </label>
+        <details>
+          <summary>Адрес API</summary>
+          <label style={{ display: "grid", gap: 6 }}>Адрес API
+            <input type="url" autoComplete="off" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} disabled={busy || !configuration} required />
+          </label>
+        </details>
       </>}
       {error && <span role="alert" style={{ color: "#c43d3d" }}>{error}</span>}
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
-        <button type="submit" disabled={busy || completed || !configuration || (!(onConfigured && saved) && (!apiKey || !baseUrl))}>
+        <button className="rounded-md bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" type="submit" disabled={busy || completed || !configuration || (!(onConfigured && saved) && (!apiKey || !baseUrl))}>
           {busy ? "Сохраняем…" : completed ? "Настройка завершена" : onConfigured ? saved ? "Продолжить запрос" : "Сохранить ключ и продолжить" : "Сохранить ключ"}
         </button>
-        {!onConfigured && <button type="button" onClick={() => void removeKey()} disabled={busy || !configuration?.configured}>Удалить ключ</button>}
-        <a href="https://vrata.tg/bot" target="_blank" rel="noopener noreferrer">Получить ключ</a>
+        {!onConfigured && <button className="rounded-md border px-3 py-2 disabled:opacity-50" type="button" onClick={() => void removeKey()} disabled={busy || !configuration?.configured}>Удалить ключ</button>}
+        <a className="underline underline-offset-2" href="https://vrata.tg/bot" target="_blank" rel="noopener noreferrer">Получить ключ</a>
       </div>
     </form>
   );
@@ -114,28 +117,50 @@ function KeyForm({ interaction, submit }: PluginPendingInteractionProps) {
   </section>;
 }
 
-function MachineSettings() {
+function MachineSettings({ initialHostId = "" }: { initialHostId?: string }) {
   const rpc = useRpc<typeof configurationContract>();
   const [hosts, setHosts] = useState<Hosts>([]);
-  const [hostId, setHostId] = useState("");
+  const [hostId, setHostId] = useState(initialHostId);
   const [error, setError] = useState("");
   useEffect(() => {
     let cancelled = false;
-    void rpc.call("listHosts", null).then((result) => { if (!cancelled) setHosts(result); }, () => {
+    void rpc.call("listHosts", null).then((result) => {
+      if (cancelled) return;
+      setHosts(result);
+      const connected = result.filter((host) => host.status === "connected");
+      if (!initialHostId && connected.length === 1) setHostId((selected) => selected || connected[0]!.id);
+    }, () => {
       if (!cancelled) setError("Не удалось получить список машин. Откройте настройки заново.");
     });
     return () => { cancelled = true; };
   }, [rpc]);
   return <section style={{ display: "grid", gap: 12 }}>
+    <span>Получите ключ в <a href="https://vrata.tg/bot" target="_blank" rel="noopener noreferrer">боте Врата AI</a> и сохраните его на машине, где будут выполняться запросы. Ключ не синхронизируется с другими машинами.</span>
     <label style={{ display: "grid", gap: 6 }}>Машина
       <select value={hostId} onChange={(event) => setHostId(event.target.value)}>
         <option value="">Выберите машину</option>
         {hosts.map((host) => <option key={host.id} value={host.id}>{host.name}{host.status === "disconnected" ? " (не подключена)" : ""}</option>)}
       </select>
     </label>
+    {!hosts.length && !error && <span>Для настройки подключите машину в bb.</span>}
     {error && <span role="alert">{error}</span>}
     {hostId && <CredentialsForm key={hostId} target={{ kind: "host", hostId }} />}
   </section>;
+}
+
+function SetupPage({ subPath }: PluginNavPanelProps) {
+  return <section style={{ display: "grid", gap: 16, padding: 24, maxWidth: 520 }}>
+    <h2 className="text-lg font-semibold">Подключить Врата AI</h2>
+    <MachineSettings key={subPath} initialHostId={subPath} />
+    <span>После сохранения ключа выберите провайдер «Врата AI (Pi)» в новом треде и отправьте сообщение.</span>
+  </section>;
+}
+
+function VrataIcon({ className }: { className?: string }) {
+  return <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <path d="M10.2 0.5h11.2v19.1H10.2V0.5Z" />
+    <path d="M9.2 0.5 2.8 3.1v20.3l6.4-4.1V0.5Z" />
+  </svg>;
 }
 
 const reasoningLabels: Record<string, string> = {
@@ -189,6 +214,8 @@ function ModelForm({ interaction, submit }: PluginPendingInteractionProps) {
 }
 
 export default definePluginApp((app) => {
+  app.slots.navPanel({ id: "setup", title: "Подключить Врата AI", icon: "KeyRound", path: "setup", component: SetupPage });
+  app.slots.experimental_providerIcon({ providerId: "vrata", icon: VrataIcon });
   app.contentScripts.register({ id: "account-balance", mount: mountBalanceFooter });
   app.slots.settingsSection({ id: "machine-auth", title: "Врата AI на машине", component: MachineSettings });
   app.slots.sidebarFooterAction({ id: "settings", title: "Настройки Врата AI", icon: "KeyRound", run: ({ openSettings }) => openSettings() });

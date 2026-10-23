@@ -285,6 +285,7 @@ if (process.argv[2] === "--probe") {
       "--no-audit", "--no-fund", join(root, pack.filename)], { env, timeout: 60000 });
     const installed = join(root, "node_modules", pack.name);
     const manifest = JSON.parse(readFileSync(join(installed, "package.json"), "utf8"));
+    assert.ok(existsSync(join(installed, manifest.bb.branding.icon)), "The shipped branding icon must resolve inside the package");
     for (const artifact of ["host", "server", "app"]) {
       assert.ok(existsSync(join(installed, manifest.bb[artifact])), `Missing ${artifact} entry`);
       assert.ok(existsSync(join(installed, "dist", `${artifact}.js`)));
