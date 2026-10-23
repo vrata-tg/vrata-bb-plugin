@@ -2,6 +2,7 @@ import type { PluginContentScriptContext, PluginRpcResult } from "@get-bb/plugin
 import { balanceResultSchema, formatRubles, type BalanceResult } from "./balance.js";
 
 import { configurationContract } from "./contract.js";
+import { hostLabel } from "./host-label.js";
 
 const footerSelector = '[data-sidebar="footer"]';
 
@@ -24,10 +25,10 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
   function render(row: HTMLDivElement): void {
     const selector = row.querySelector("select")!;
     if (selector.options.length === 1 && hosts.length) {
-      for (const host of hosts) {
+      for (const [index, host] of hosts.entries()) {
         const option = document.createElement("option");
         option.value = host.id;
-        option.textContent = `${host.name}${host.status === "disconnected" ? " (не подключена)" : ""}`;
+        option.textContent = `${hostLabel(host, index)}${host.status === "disconnected" ? " (не подключён)" : ""}`;
         selector.append(option);
       }
     }
@@ -40,7 +41,7 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
     const setup = row.querySelector<HTMLAnchorElement>("[data-vrata-setup]")!;
     setup.href = `/plugins/${encodeURIComponent(pluginId)}/setup/${encodeURIComponent(hostId)}`;
     setup.style.display = needsKey ? "flex" : "none";
-    setup.title = `Добавить ключ Врата AI на машине ${hosts.find((host) => host.id === hostId)?.name ?? ""}`;
+    setup.title = "Подключить Врата AI";
     button.style.display = needsKey ? "none" : "";
     row.querySelector<HTMLAnchorElement>("[data-vrata-top-up]")!.hidden = needsKey;
     const hasConnectedHost = hosts.some((host) => host.status === "connected");
@@ -67,7 +68,9 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
     if (button.lastElementChild?.textContent !== label) button.lastElementChild!.textContent = label;
     button.title = title;
     button.disabled = busy || !hostId;
-    button.setAttribute("aria-label", `Врата AI, ${hosts.find((host) => host.id === hostId)?.name ?? "машина не выбрана"}: ${label}. Обновить баланс`);
+    const selectedIndex = hosts.findIndex((host) => host.id === hostId);
+    const computer = hosts.length > 1 && selectedIndex >= 0 ? `, ${hostLabel(hosts[selectedIndex]!, selectedIndex)}` : "";
+    button.setAttribute("aria-label", `Врата AI${computer}: ${label}. Обновить баланс`);
     button.setAttribute("aria-busy", String(busy));
   }
 

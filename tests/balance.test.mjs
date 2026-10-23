@@ -164,7 +164,7 @@ test("a single machine loads its balance without a picker", async (t) => {
   const row = ui.document.querySelector("[data-vrata-balance]");
   assert.equal(row.querySelector("select").hidden, true);
   assert.match(row.querySelector("button").textContent, /1,50 ₽/);
-  assert.match(row.querySelector("button").getAttribute("aria-label"), /Machine A/);
+  assert.doesNotMatch(row.querySelector("button").getAttribute("aria-label"), /Machine A/);
 });
 
 test("no configured key or connected machines produces an actionable status", async (t) => {

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { definePluginApp, useRpc, type PluginNavPanelProps, type PluginPendingInteractionProps, type PluginRpcResult, type StandardSchemaV1InferInput } from "@get-bb/plugin-sdk/app";
-import type { configurationContract } from "./contract.js";
+import { definePluginApp, useBbNavigate, useRpc, type PluginNavPanelProps, type PluginPendingInteractionProps, type PluginRpcResult, type StandardSchemaV1InferInput } from "@get-bb/plugin-sdk/app";
+import type { configurationContract, onboardingContract } from "./contract.js";
+import { hostLabel } from "./host-label.js";
 import { mountBalanceFooter } from "./balance-footer.js";
 
 type Target = StandardSchemaV1InferInput<typeof configurationContract.saveCredentials.input>["target"];
@@ -13,7 +14,6 @@ function CredentialsForm({ target, onConfigured }: { target: Target; onConfigure
   const inFlight = useRef(false);
   const [configuration, setConfiguration] = useState<Configuration | null>(null);
   const [apiKey, setApiKey] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
   const [saved, setSaved] = useState(false);
   const [completed, setCompleted] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -26,9 +26,8 @@ function CredentialsForm({ target, onConfigured }: { target: Target; onConfigure
     void rpc.call("getConfiguration", { target }).then((result) => {
       if (cancelled) return;
       setConfiguration(result);
-      setBaseUrl(result.baseUrl);
     }, () => {
-      if (!cancelled) setError("Не удалось прочитать настройку машины. Выберите её заново.");
+      if (!cancelled) setError("Не удалось загрузить настройки. Попробуйте открыть страницу заново.");
     });
     return () => { cancelled = true; active.current = false; };
   }, [rpc]);
@@ -41,10 +40,9 @@ function CredentialsForm({ target, onConfigured }: { target: Target; onConfigure
     setError("");
     try {
       if (!saved || !onConfigured) {
-        const result = await rpc.call("saveCredentials", { target, apiKey, baseUrl });
+        const result = await rpc.call("saveCredentials", { target, apiKey, baseUrl: configuration.baseUrl });
         if (!active.current) return;
         setConfiguration(result);
-        setBaseUrl(result.baseUrl);
         setApiKey("");
         setSaved(true);
       }
@@ -53,7 +51,7 @@ function CredentialsForm({ target, onConfigured }: { target: Target; onConfigure
         if (active.current) setCompleted(true);
       }
     } catch {
-      if (active.current) setError("Не удалось завершить настройку машины. Проверьте подключение, ключ и адрес API и повторите попытку.");
+      if (active.current) setError("Не удалось подключиться. Проверьте ключ и соединение и повторите попытку.");
     } finally {
       inFlight.current = false;
       if (active.current) setBusy(false);
@@ -69,11 +67,10 @@ function CredentialsForm({ target, onConfigured }: { target: Target; onConfigure
       const result = await rpc.call("deleteCredentials", { hostId: configuration.hostId });
       if (!active.current) return;
       setConfiguration(result);
-      setBaseUrl(result.baseUrl);
       setApiKey("");
       setSaved(false);
     } catch {
-      if (active.current) setError("Не удалось удалить ключ на выбранной машине. Повторите попытку.");
+      if (active.current) setError("Не удалось удалить ключ. Повторите попытку.");
     } finally {
       inFlight.current = false;
       if (active.current) setBusy(false);
@@ -82,44 +79,38 @@ function CredentialsForm({ target, onConfigured }: { target: Target; onConfigure
 
   return (
     <form onSubmit={(event) => void onSubmit(event)} style={{ display: "grid", gap: 12, maxWidth: 440 }}>
-      {configuration ? <span>Машина: <strong>{configuration.hostName}</strong></span> : <span>Загружаем настройку машины…</span>}
-      {configuration && <span role="status">{configuration.configured ? "Ключ сохранён на этой машине" : "Ключ на этой машине не настроен"}</span>}
+      {!configuration && <span>Загружаем настройки…</span>}
+      {configuration && <span role="status">{configuration.configured ? "Врата AI подключена" : "Добавьте ключ, чтобы начать"}</span>}
+      {!(onConfigured && saved) && <a className="underline underline-offset-2" href="https://vrata.tg/bot" target="_blank" rel="noopener noreferrer">Получить ключ в боте Врата AI ↗</a>}
       {!(onConfigured && saved) && <>
         <label style={{ display: "grid", gap: 6 }}>Ключ API
           <input autoComplete="off" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)}
             placeholder={configuration?.configured ? "Новый ключ Врата AI" : "Ключ Врата AI"} disabled={busy || !configuration} required maxLength={4096}
             style={{ width: "100%", padding: 8, border: "1px solid currentColor", borderRadius: 6, background: "transparent", color: "inherit" }} />
         </label>
-        <details>
-          <summary>Адрес API</summary>
-          <label style={{ display: "grid", gap: 6 }}>Адрес API
-            <input type="url" autoComplete="off" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} disabled={busy || !configuration} required />
-          </label>
-        </details>
       </>}
       {error && <span role="alert" style={{ color: "#c43d3d" }}>{error}</span>}
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
-        <button className="rounded-md bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" type="submit" disabled={busy || completed || !configuration || (!(onConfigured && saved) && (!apiKey || !baseUrl))}>
+        <button className="rounded-md bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" type="submit" disabled={busy || completed || !configuration || (!(onConfigured && saved) && !apiKey)}>
           {busy ? "Сохраняем…" : completed ? "Настройка завершена" : onConfigured ? saved ? "Продолжить запрос" : "Сохранить ключ и продолжить" : "Сохранить ключ"}
         </button>
-        {!onConfigured && <button className="rounded-md border px-3 py-2 disabled:opacity-50" type="button" onClick={() => void removeKey()} disabled={busy || !configuration?.configured}>Удалить ключ</button>}
-        <a className="underline underline-offset-2" href="https://vrata.tg/bot" target="_blank" rel="noopener noreferrer">Получить ключ</a>
+        {!onConfigured && configuration?.configured && <button className="rounded-md border px-3 py-2 disabled:opacity-50" type="button" onClick={() => void removeKey()} disabled={busy || !configuration?.configured}>Удалить ключ</button>}
       </div>
     </form>
   );
 }
 
-function KeyForm({ interaction, submit }: PluginPendingInteractionProps) {
-  return <section style={{ display: "grid", gap: 12, padding: 16 }}>
-    <strong>{interaction.title}</strong>
-    <span>Сохраните ключ на машине треда. После проверки исходный запрос продолжится автоматически.</span>
-    <CredentialsForm key={`${interaction.threadId}:${interaction.id}`} target={{ kind: "thread", threadId: interaction.threadId }} onConfigured={() => submit({ configured: true })} />
-  </section>;
+function SetupRedirect({ interaction }: PluginPendingInteractionProps) {
+  const navigate = useBbNavigate();
+  const subPath = `thread/${interaction.threadId}/${interaction.id}`;
+  useEffect(() => { navigate.toPluginPanel("setup", { subPath, replace: true }); }, [navigate, subPath]);
+  return <button className="underline" onClick={() => navigate.toPluginPanel("setup", { subPath })}>Открыть подключение Врата AI</button>;
 }
 
 function MachineSettings({ initialHostId = "" }: { initialHostId?: string }) {
   const rpc = useRpc<typeof configurationContract>();
   const [hosts, setHosts] = useState<Hosts>([]);
+  const [loading, setLoading] = useState(true);
   const [hostId, setHostId] = useState(initialHostId);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -127,32 +118,71 @@ function MachineSettings({ initialHostId = "" }: { initialHostId?: string }) {
     void rpc.call("listHosts", null).then((result) => {
       if (cancelled) return;
       setHosts(result);
+      setLoading(false);
       const connected = result.filter((host) => host.status === "connected");
-      if (!initialHostId && connected.length === 1) setHostId((selected) => selected || connected[0]!.id);
+      const automaticHost = result.length === 1 ? result[0] : connected.length === 1 ? connected[0] : undefined;
+      if (!initialHostId && automaticHost) setHostId((selected) => selected || automaticHost.id);
     }, () => {
-      if (!cancelled) setError("Не удалось получить список машин. Откройте настройки заново.");
+      if (!cancelled) { setLoading(false); setError("Не удалось загрузить настройки. Откройте страницу заново."); }
     });
     return () => { cancelled = true; };
   }, [rpc]);
   return <section style={{ display: "grid", gap: 12 }}>
-    <span>Получите ключ в <a href="https://vrata.tg/bot" target="_blank" rel="noopener noreferrer">боте Врата AI</a> и сохраните его на машине, где будут выполняться запросы. Ключ не синхронизируется с другими машинами.</span>
-    <label style={{ display: "grid", gap: 6 }}>Машина
+    {hosts.length > 1 && <label style={{ display: "grid", gap: 6 }}>Компьютер
       <select value={hostId} onChange={(event) => setHostId(event.target.value)}>
-        <option value="">Выберите машину</option>
-        {hosts.map((host) => <option key={host.id} value={host.id}>{host.name}{host.status === "disconnected" ? " (не подключена)" : ""}</option>)}
+        <option value="">Выберите компьютер</option>
+        {hosts.map((host, index) => <option key={host.id} value={host.id}>{hostLabel(host, index)}{host.status === "disconnected" ? " (не подключён)" : ""}</option>)}
       </select>
-    </label>
-    {!hosts.length && !error && <span>Для настройки подключите машину в bb.</span>}
+    </label>}
+    {loading && !hostId && <span>Загружаем настройки…</span>}
+    {!loading && !hosts.length && !error && <span>Подключите компьютер в bb, чтобы сохранить ключ.</span>}
     {error && <span role="alert">{error}</span>}
     {hostId && <CredentialsForm key={hostId} target={{ kind: "host", hostId }} />}
   </section>;
 }
 
+function ThreadSetup({ threadId, interactionId }: { threadId: string; interactionId: string }) {
+  const rpc = useRpc<typeof onboardingContract>();
+  const navigate = useBbNavigate();
+  const [interaction, setInteraction] = useState<PluginRpcResult<typeof onboardingContract.getSetupInteraction> | null>(null);
+  const [error, setError] = useState("");
+  const [cancelling, setCancelling] = useState(false);
+  const active = useRef(false);
+  useEffect(() => {
+    active.current = true;
+    let cancelled = false;
+    void rpc.call("getSetupInteraction", { threadId, interactionId }).then((result) => {
+      if (!cancelled) setInteraction(result);
+    }, () => { if (!cancelled) setError("Этот шаг настройки недоступен. Вернитесь в тред."); });
+    return () => { cancelled = true; active.current = false; };
+  }, [rpc, threadId, interactionId]);
+
+  async function finish(answer: StandardSchemaV1InferInput<typeof onboardingContract.submitSetupInteraction.input>["answer"]) {
+    await rpc.call("submitSetupInteraction", { threadId, interactionId, answer });
+    if (active.current) navigate.toThread(threadId);
+  }
+  async function cancel() {
+    setCancelling(true);
+    try { await finish({ kind: "cancel" }); }
+    catch { setError("Не удалось отменить настройку. Вернитесь в тред."); setCancelling(false); }
+  }
+  return <>
+    {!interaction && !error && <span>Загружаем подключение…</span>}
+    {interaction?.kind === "api-key" && <CredentialsForm target={{ kind: "thread", threadId }} onConfigured={() => finish({ kind: "api-key", configured: true })} />}
+    {interaction?.kind === "model" && <ModelForm interaction={{ title: "Выберите модель", payload: interaction.data }} submit={(value) => finish({ kind: "model", ...value })} />}
+    {error && <span role="alert">{error}</span>}
+    {interaction && <button className="justify-self-start underline" disabled={cancelling} onClick={() => void cancel()}>Отмена</button>}
+    {error && <button className="justify-self-start underline" onClick={() => navigate.toThread(threadId)}>Вернуться в тред</button>}
+  </>;
+}
+
 function SetupPage({ subPath }: PluginNavPanelProps) {
+  const [scope, threadId, interactionId] = subPath.split("/");
   return <section style={{ display: "grid", gap: 16, padding: 24, maxWidth: 520 }}>
-    <h2 className="text-lg font-semibold">Подключить Врата AI</h2>
-    <MachineSettings key={subPath} initialHostId={subPath} />
-    <span>После сохранения ключа выберите провайдер «Врата AI (Pi)» в новом треде и отправьте сообщение.</span>
+    <h2 className="text-lg font-semibold">Врата AI</h2>
+    {scope === "thread" && threadId && interactionId
+      ? <ThreadSetup key={subPath} threadId={threadId} interactionId={interactionId} />
+      : <MachineSettings key={subPath} initialHostId={subPath} />}
   </section>;
 }
 
@@ -163,21 +193,22 @@ function VrataIcon({ className }: { className?: string }) {
   </svg>;
 }
 
-const reasoningLabels: Record<string, string> = {
+const reasoningLabels = {
   none: "Выкл.", low: "Низкий", medium: "Средний",
   high: "Высокий", xhigh: "Очень высокий", max: "Максимальный",
-};
+} as const;
+type ReasoningLevel = keyof typeof reasoningLabels;
 
-function ModelForm({ interaction, submit }: PluginPendingInteractionProps) {
+function ModelForm({ interaction, submit }: { interaction: Pick<PluginPendingInteractionProps["interaction"], "title" | "payload">; submit: (value: { modelId: string; reasoningLevel: ReasoningLevel }) => Promise<void> }) {
   const payload = interaction.payload;
   const data = payload;
   const rawModels = data && typeof data === "object" && !Array.isArray(data) && "models" in data ? data.models : null;
-  const models = Array.isArray(rawModels) ? rawModels.filter((value): value is { id: string; name: string; reasoningLevels: string[] } =>
+  const models = Array.isArray(rawModels) ? rawModels.filter((value): value is { id: string; name: string; reasoningLevels: ReasoningLevel[] } =>
     value !== null && typeof value === "object" && !Array.isArray(value) && typeof value.id === "string" && typeof value.name === "string"
     && Array.isArray(value.reasoningLevels) && value.reasoningLevels.length > 0
     && value.reasoningLevels.every((level) => typeof level === "string" && Object.hasOwn(reasoningLabels, level))) : [];
   const [modelId, setModelId] = useState(models[0]?.id ?? "");
-  const [reasoningLevel, setReasoningLevel] = useState("medium");
+  const [reasoningLevel, setReasoningLevel] = useState<ReasoningLevel>("medium");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const selected = models.find((model) => model.id === modelId);
@@ -195,30 +226,30 @@ function ModelForm({ interaction, submit }: PluginPendingInteractionProps) {
   }
 
   return (
-    <form onSubmit={(event) => void onSubmit(event)} style={{ display: "grid", gap: 12, maxWidth: 440, padding: 16 }}>
+    <form onSubmit={(event) => void onSubmit(event)} style={{ display: "grid", gap: 12, maxWidth: 440 }}>
       <strong>{interaction.title}</strong>
       <label style={{ display: "grid", gap: 6 }}>Модель
         <select value={modelId} onChange={(event) => setModelId(event.target.value)} disabled={busy} required>
           {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
         </select>
       </label>
-      {selected && selected.reasoningLevels.some((level) => level !== "none") && <label style={{ display: "grid", gap: 6 }}>Ризонинг
-        <select value={selectedReasoning} onChange={(event) => setReasoningLevel(event.target.value)} disabled={busy}>
+      {selected && selected.reasoningLevels.some((level) => level !== "none") && <label style={{ display: "grid", gap: 6 }}>Рассуждения
+        <select value={selectedReasoning} onChange={(event) => setReasoningLevel(event.target.value as ReasoningLevel)} disabled={busy}>
           {selected.reasoningLevels.map((level) => <option key={level} value={level}>{reasoningLabels[level]}</option>)}
         </select>
       </label>}
       {error && <span role="alert" style={{ color: "#c43d3d" }}>{error}</span>}
-      <button type="submit" disabled={busy || !selected}>Продолжить запрос</button>
+      <button className="rounded-md bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" type="submit" disabled={busy || !selected}>Продолжить запрос</button>
     </form>
   );
 }
 
 export default definePluginApp((app) => {
-  app.slots.navPanel({ id: "setup", title: "Подключить Врата AI", icon: "KeyRound", path: "setup", component: SetupPage });
+  app.slots.navPanel({ id: "setup", title: "Врата AI", icon: "KeyRound", path: "setup", component: SetupPage });
   app.slots.experimental_providerIcon({ providerId: "vrata", icon: VrataIcon });
   app.contentScripts.register({ id: "account-balance", mount: mountBalanceFooter });
-  app.slots.settingsSection({ id: "machine-auth", title: "Врата AI на машине", component: MachineSettings });
+  app.slots.settingsSection({ id: "machine-auth", title: "Врата AI", component: MachineSettings });
   app.slots.sidebarFooterAction({ id: "settings", title: "Настройки Врата AI", icon: "KeyRound", run: ({ openSettings }) => openSettings() });
-  app.slots.pendingInteraction({ id: "api-key", component: KeyForm });
-  app.slots.pendingInteraction({ id: "model", component: ModelForm });
+  app.slots.pendingInteraction({ id: "api-key", component: SetupRedirect });
+  app.slots.pendingInteraction({ id: "model", component: SetupRedirect });
 });
