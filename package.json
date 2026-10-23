@@ -17,9 +17,9 @@
     "branding": {
       "icon": "Sparkles"
     },
-    "server": "./server.ts",
-    "app": "./app.tsx",
-    "host": "./host.ts"
+    "server": "./src/server.ts",
+    "app": "./src/app.tsx",
+    "host": "./src/host.ts"
   },
   "scripts": {
     "build": "node scripts/vendor-pi-runtime.mjs && bb plugin build",
@@ -48,11 +48,7 @@
     "dist/*.js",
     "dist/*.css",
     "dist/*.meta.json",
-    "*.ts",
-    "*.tsx",
-    "pi/*.ts",
-    "pi/LICENSE",
-    "pi/NOTICE.md",
+    "src/",
     "packaging/pi/LICENSE",
     "packaging/pi/NOTICE.md"
   ]
