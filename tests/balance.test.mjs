@@ -64,7 +64,7 @@ async function settle() {
 function client(t, fetcher, { hosts = [
   { id: "host-a", name: "Machine A", status: "connected" },
   { id: "host-b", name: "Machine B", status: "connected" },
-], getConfiguration = () => ({ configured: true, baseUrl: "https://api.vrata.tg" }) } = {}) {
+], listHosts = () => hosts, getConfiguration = () => ({ configured: true, baseUrl: "https://api.vrata.tg" }) } = {}) {
   const dom = new JSDOM('<body><aside><div data-sidebar="footer"><a>Settings</a></div></aside></body>', { pretendToBeVisual: true });
   const originals = new Map();
   const timers = new Map();
@@ -88,7 +88,7 @@ function client(t, fetcher, { hosts = [
     fetch: (url, options) => {
       if (url.endsWith("/listHosts")) {
         assert.equal(options.body, "null");
-        return Promise.resolve(rpcResponse(hosts));
+        return Promise.resolve().then(listHosts).then(rpcResponse);
       }
       if (url.endsWith("/getConfiguration")) {
         const { target } = JSON.parse(options.body);
@@ -178,10 +178,48 @@ test("no configured key or connected machines produces an actionable status", as
       await settle();
       assert.equal(calls, connected ? 1 : 0);
       const button = ui.document.querySelector("[data-vrata-balance] button");
-      assert.match(button.textContent, connected ? /Ключ не настроен/ : /Нет подключённых машин/);
-      assert.equal(button.disabled, !connected);
+      assert.match(button.textContent, connected ? /Ключ не настроен/ : /Подключаемся/);
+      assert.equal(button.disabled, false);
     });
   }
+});
+
+test("startup discovery recovers when a machine connects after the footer mounts", async (t) => {
+  for (const trigger of ["timer", "event", "focus", "click"]) await t.test(trigger, async (t) => {
+    const hosts = [{ id: "host-a", name: "Machine A", status: "disconnected" }];
+    let calls = 0;
+    const ui = client(t, async () => { calls++; return rpcResponse(balance); }, { hosts });
+    await settle();
+    const row = ui.document.querySelector("[data-vrata-balance]");
+    assert.equal(calls, 0);
+    assert.equal(ui.timers.size, 1, "Offline startup must schedule another discovery");
+    hosts[0].status = "connected";
+    if (trigger === "timer") [...ui.timers.values()][0].callback();
+    if (trigger === "event") ui.sources[0].refresh();
+    if (trigger === "focus") ui.dom.window.dispatchEvent(new ui.dom.window.Event("focus"));
+    if (trigger === "click") row.querySelector("button").click();
+    await settle();
+    assert.equal(calls, 1);
+    assert.match(row.textContent, /1,50 ₽/);
+    assert.equal(row.querySelector("select").value, "host-a");
+    assert.doesNotMatch(row.querySelector("select").selectedOptions[0].textContent, /не подключён/);
+    assert.equal(ui.timers.size, 1);
+  });
+});
+
+test("an unavailable host list can be retried without remounting the footer", async (t) => {
+  let available = false;
+  const hosts = [{ id: "host-a", name: "Machine A", status: "connected" }];
+  const ui = client(t, async () => rpcResponse(balance), {
+    hosts,
+    listHosts() { if (!available) throw new Error("BB is starting"); return hosts; },
+  });
+  await settle();
+  assert.match(ui.document.querySelector("[data-vrata-balance]").textContent, /Баланс недоступен/);
+  available = true;
+  ui.sources[0].refresh();
+  await settle();
+  assert.match(ui.document.querySelector("[data-vrata-balance]").textContent, /1,50 ₽/);
 });
 
 test("manual selection and disposal cancel discovery and reject its late result", async (t) => {
@@ -368,19 +406,30 @@ test("backend signals only Vrata completions and failures; disconnect and reload
   const handlers = new Map();
   let route;
   let dispose;
+  let hostChanged;
+  let unsubscribed = false;
+  const disposers = [];
   const notify = registerBalanceEvents({
+    sdk: { subscribe: ({ event, callback }) => {
+      assert.equal(event, "host:changed");
+      hostChanged = callback;
+      return () => { unsubscribed = true; };
+    } },
     events: { on: (event, handler) => handlers.set(event, handler) },
     http: { route: (method, path, handler) => {
       assert.equal(method, "GET"); assert.equal(path, "/balance-events"); route = handler;
     } },
-    onDispose: (handler) => { dispose = handler; },
+    onDispose: (handler) => { disposers.push(handler); },
   });
+  dispose = () => { for (const handler of disposers.splice(0).reverse()) handler(); };
   t.after(() => dispose());
   const controller = new AbortController();
   const response = route({ req: { raw: new Request("http://bb.test", { signal: controller.signal }) } });
   assert.equal(response.headers.get("content-type"), "text/event-stream");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
+  assert.equal(decoder.decode((await reader.read()).value), "data: refresh\n\n");
+  hostChanged({ changes: ["host-connected"] });
   assert.equal(decoder.decode((await reader.read()).value), "data: refresh\n\n");
   let received = false;
   const next = reader.read().then((value) => { received = true; return value; });
@@ -402,6 +451,7 @@ test("backend signals only Vrata completions and failures; disconnect and reload
   const reconnected = route({ req: { raw: new Request("http://bb.test") } }).body.getReader();
   await reconnected.read();
   dispose();
+  assert.equal(unsubscribed, true);
   assert.equal((await reconnected.read()).done, true);
 });
 
