@@ -106,7 +106,8 @@ export class PiRpcChild {
     const launch = args.launch;
     this.child = spawn(launch.command, [...launch.args, ...args.args], {
       cwd: args.cwd,
-      env: args.env,
+      // Desktop BB's execPath is Electron; the embedded script needs Node mode.
+      env: { ...args.env, ELECTRON_RUN_AS_NODE: "1" },
       stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
     });
     experimental_recordProviderChildIo(this.child, {
