@@ -7,14 +7,3 @@
 ```bash
 bb plugin install npm:@vrata-ai/bb-plugin
 ```
-
-## Релиз
-
-Откройте **Actions → Release → Run workflow**, выберите `main` и введите новую
-версию без `v`, например `0.1.1`. Workflow сам обновит версию, выполнит проверки,
-запушит коммит и тег `vX.X.X`, опубликует `@vrata-ai/bb-plugin` в npm и создаст
-GitHub Release.
-
-Один раз добавьте в Actions secrets `NPM_TOKEN` —
-[npm-токен](https://docs.npmjs.com/creating-and-viewing-access-tokens)
-с правом публикации в `@vrata-ai` и включённым **Bypass 2FA**.
