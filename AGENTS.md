@@ -11,14 +11,9 @@ Use Node.js 22 and `npm ci`. Read `package.json` for commands and README for
 plugin behavior and verification. Run `npm run typecheck`, `npm run build` and
 `npm test` before shipping code or build configuration.
 
-The development workflow is copied from `vrata-vscode`, which adapts the main
-`ai-billing-gateway` repository. Read
-[.agents/skills/vrata-bb-plugin-dev/SKILL.md](.agents/skills/vrata-bb-plugin-dev/SKILL.md)
+Read [.agents/skills/vrata-bb-plugin-dev/SKILL.md](.agents/skills/vrata-bb-plugin-dev/SKILL.md)
 for implementation, planning, review, simplification and delivery. It owns the
-sequence; this file owns plugin invariants. Read only the selected stage's
-package. [.agents/README.md](.agents/README.md) lists the vendored packages and
-maps their tools to the available client; [.agents/PROMPTS.md](.agents/PROMPTS.md)
-provides direct entry prompts.
+sequence; this file owns plugin invariants.
 
 ## Boundaries
 
@@ -66,5 +61,5 @@ Keep user edits intact and update the existing PR when requested; do not merge
 or publish a release without an explicit request.
 
 Save and commit investigation notes, reports and durable findings in
-https://github.com/v-lebedev/vrata-docs, following that repository's AGENTS.md.
+https://github.com/vrata-tg/ai-memory, following that repository's AGENTS.md.
 Keep operational development instructions here.

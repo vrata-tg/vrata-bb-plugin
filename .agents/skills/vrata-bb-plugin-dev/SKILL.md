@@ -45,9 +45,7 @@ first use; reuse unchanged references that remain in context.
 7. Deliver with `../github-pr-workflow/SKILL.md` and wait for configured CI on
    the exact remote head SHA. Report when the repository has no CI checks.
 
-If the client has no native skill loader, read these files directly. Map tool
-names through `.agents/README.md`; lack of a vendor-specific primitive does not
-permit skipping required verification or a real user decision.
+If the client has no native skill loader, read these files directly.
 
 ## 1. Establish the working tree
 
@@ -70,7 +68,7 @@ it.
 
 ## 2. Plan core before editing
 
-For the substantial route, write or update a plan in the `vrata-docs` repository,
+For the substantial route, write or update a plan in the `vrata-tg/ai-memory` repository,
 following its `AGENTS.md`, with stable R/U/AE IDs, source paths, verification and
 scope boundaries. Pass the plan path explicitly to nested skills; their default
 `docs/plans/` location does not override this rule. Save reports and durable
