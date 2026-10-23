@@ -168,10 +168,9 @@ function ThreadSetup({ threadId, interactionId }: { threadId: string; interactio
   }
   return <>
     {!interaction && !error && <span>Загружаем подключение…</span>}
-    {interaction?.kind === "api-key" && <CredentialsForm target={{ kind: "thread", threadId }} onConfigured={() => finish({ kind: "api-key", configured: true })} />}
-    {interaction?.kind === "model" && <RetiredModelSetup threadId={threadId} interactionId={interactionId} onCancelled={() => navigate.toThread(threadId)} />}
+    {interaction && <CredentialsForm target={{ kind: "thread", threadId }} onConfigured={() => finish({ kind: "api-key", configured: true })} />}
     {error && <span role="alert">{error}</span>}
-    {interaction?.kind === "api-key" && <button className="justify-self-start underline" disabled={cancelling} onClick={() => void cancel()}>Отмена</button>}
+    {interaction && <button className="justify-self-start underline" disabled={cancelling} onClick={() => void cancel()}>Отмена</button>}
     {error && <button className="justify-self-start underline" onClick={() => navigate.toThread(threadId)}>Вернуться в тред</button>}
   </>;
 }
@@ -193,33 +192,6 @@ function VrataIcon({ className }: { className?: string }) {
   </svg>;
 }
 
-function RetiredModelSetup({ threadId, interactionId, onCancelled }: { threadId: string; interactionId: string; onCancelled?: () => void }) {
-  const rpc = useRpc<typeof onboardingContract>();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const active = useRef(false);
-  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
-  async function cancel() {
-    setBusy(true);
-    setError("");
-    try {
-      await rpc.call("submitSetupInteraction", { threadId, interactionId, answer: { kind: "cancel" } });
-      if (active.current) onCancelled?.();
-    } catch {
-      if (active.current) { setError("Не удалось остановить настройку. Нажмите Стоп в треде."); setBusy(false); }
-    }
-  }
-  return <div style={{ display: "grid", gap: 12 }}>
-    <span>Выбор модели перенесён в меню модели bb рядом с полем ввода. Остановите старую настройку, выберите модель и отправьте запрос снова.</span>
-    <button className="justify-self-start underline" disabled={busy} onClick={() => void cancel()}>Остановить старую настройку</button>
-    {error && <span role="alert">{error}</span>}
-  </div>;
-}
-
-function RetiredModelInteraction({ interaction }: PluginPendingInteractionProps) {
-  return <RetiredModelSetup threadId={interaction.threadId} interactionId={interaction.id} />;
-}
-
 export default definePluginApp((app) => {
   app.slots.navPanel({ id: "setup", title: "Врата AI", icon: "KeyRound", path: "setup", component: SetupPage });
   app.slots.experimental_providerIcon({ providerId: "vrata", icon: VrataIcon });
@@ -227,5 +199,4 @@ export default definePluginApp((app) => {
   app.slots.settingsSection({ id: "machine-auth", title: "Врата AI", component: MachineSettings });
   app.slots.sidebarFooterAction({ id: "settings", title: "Настройки Врата AI", icon: "KeyRound", run: ({ openSettings }) => openSettings() });
   app.slots.pendingInteraction({ id: "api-key", component: KeySetupLink });
-  app.slots.pendingInteraction({ id: "model", component: RetiredModelInteraction });
 });

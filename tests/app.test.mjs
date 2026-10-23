@@ -228,24 +228,6 @@ test("pending key setup only navigates after an explicit click", async (t) => {
   await waitFor(() => assert.deepEqual(view.navigateCalls, [{ method: "toPluginPanel", path: "setup", options: { subPath: "thread/thread-a/interaction-a" } }]));
 });
 
-test("old model interaction stays in its thread and stops without a separate picker", async (t) => {
-  const { app, mount, fireEvent, waitFor } = await setup(t);
-  const answers = [];
-  const stopped = Promise.withResolvers();
-  const view = mount(app.pendingInteractions.find(({ id }) => id === "model"), { interaction: interaction(), submit: async () => {} }, { rpc: {
-    submitSetupInteraction: async (input) => { answers.push(input); await stopped.promise; return null; },
-  } });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(view.navigateCalls, []);
-  assert.equal(view.queryByRole("combobox"), null);
-  fireEvent.click(view.getByRole("button", { name: "Остановить старую настройку" }));
-  await waitFor(() => assert.deepEqual(answers, [{ threadId: "thread-a", interactionId: "interaction-a", answer: { kind: "cancel" } }]));
-  assert.equal(view.getByRole("button").disabled, true);
-  stopped.resolve(null);
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(view.navigateCalls, []);
-});
-
 test("unavailable setup returns to the thread without reopening its old interaction", async (t) => {
   const { app, mount, fireEvent, waitFor } = await setup(t);
   const page = mount(app.navPanels.find(({ id }) => id === "setup"), { subPath: "thread/thread-a/interaction-a" }, { rpc: {
@@ -298,11 +280,12 @@ test("setup page cancellation returns to its thread, while a late response never
   const replies = [];
   const pending = Promise.withResolvers();
   const view = mount(app.navPanels.find(({ id }) => id === "setup"), { subPath: "thread/thread-a/interaction-a" }, { rpc: {
-    getSetupInteraction: async () => ({ id: "interaction-a", kind: "model", data: { models: [{ id: "m", name: "M", reasoningLevels: ["none"] }] } }),
+    getSetupInteraction: async () => ({ id: "interaction-a", kind: "api-key", data: {} }),
+    getConfiguration: async () => metadata("host-a"),
     submitSetupInteraction: async (input) => { replies.push(input); return pending.promise; },
   } });
-  await waitFor(() => assert.ok(view.queryByRole("button", { name: "Остановить старую настройку" })));
-  fireEvent.click(view.getByRole("button", { name: "Остановить старую настройку" }));
+  await waitFor(() => assert.ok(view.queryByRole("button", { name: "Отмена" })));
+  fireEvent.click(view.getByRole("button", { name: "Отмена" }));
   await waitFor(() => assert.equal(replies.length, 1));
   assert.deepEqual(replies[0], { threadId: "thread-a", interactionId: "interaction-a", answer: { kind: "cancel" } });
   view.unmount();

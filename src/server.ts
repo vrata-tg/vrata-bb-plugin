@@ -88,23 +88,20 @@ export default function plugin(bb: BbPluginApi): void {
   async function getSetupInteraction(target: { threadId: string; interactionId: string }) {
     const interaction = await bb.sdk.threads.interactions.get({ ...target, signal });
     signal.throwIfAborted();
-    const kind: "api-key" | "model" | null = interaction.payload.kind === `${bb.pluginId}/api-key` ? "api-key"
-      : interaction.payload.kind === `${bb.pluginId}/model` ? "model" : null;
     if (interaction.threadId !== target.threadId || interaction.status !== "pending"
-      || !("providerId" in interaction) || interaction.providerId !== "vrata" || !kind) {
+      || !("providerId" in interaction) || interaction.providerId !== "vrata" || interaction.payload.kind !== `${bb.pluginId}/api-key`) {
       throw new Error("Настройка больше не ожидает ответа. Вернитесь в тред.");
     }
-    return { id: interaction.id, kind, data: "data" in interaction.payload ? interaction.payload.data : null };
+    return { id: interaction.id, kind: "api-key" as const, data: "data" in interaction.payload ? interaction.payload.data : null };
   }
 
   bb.rpc.register(onboardingContract, {
     getSetupInteraction,
     async submitSetupInteraction({ threadId, interactionId, answer }) {
       const target = { threadId, interactionId };
-      const interaction = await getSetupInteraction(target);
+      await getSetupInteraction(target);
       if (answer.kind === "cancel") await bb.sdk.threads.stop({ threadId });
       else {
-        if (answer.kind !== interaction.kind) throw new Error("Шаг настройки изменился. Откройте его заново из треда.");
         await bb.sdk.threads.interactions.respond({ ...target, value: { configured: true } });
       }
       return null;

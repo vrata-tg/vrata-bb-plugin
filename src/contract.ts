@@ -40,7 +40,7 @@ const setupTarget = z.object({ threadId: z.string().min(1), interactionId: z.str
 export const onboardingContract = defineRpcContract({
   getSetupInteraction: {
     input: setupTarget,
-    output: z.object({ id: z.string(), kind: z.enum(["api-key", "model"]), data: z.json() }),
+    output: z.object({ id: z.string(), kind: z.literal("api-key"), data: z.json() }),
   },
   submitSetupInteraction: {
     input: setupTarget.extend({ answer: z.discriminatedUnion("kind", [

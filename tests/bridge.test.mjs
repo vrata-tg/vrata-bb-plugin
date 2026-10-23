@@ -62,7 +62,6 @@ test("native catalog reflects host key save, rotation and deletion without a set
   await saveLocalCredentials(t, f);
   const catalog = (await f.rpc("model/list", {})).result;
   assert.ok(catalog.models.some(({ id }) => id === dynamicModel));
-  assert.ok(catalog.models.every(({ id }) => id !== "vrata-setup"));
   const high = catalog.models.find(({ id }) => id === dynamicModel);
   assert.ok(high.supportedReasoningEfforts.some(({ reasoningEffort }) => reasoningEffort === "high"));
   const next = await f.anotherGateway({ onModels({ response }) {
@@ -76,27 +75,10 @@ test("native catalog reflects host key save, rotation and deletion without a set
   assert.deepEqual(f.spawned(), []);
 });
 
-test("legacy setup selection asks for a native choice, then accepts that choice on retry", async (t) => {
-  const f = await fixture(t, {}, { configured: false });
-  await f.start({ options: { model: "vrata-setup" } });
-  await f.turn("Needs native selection", { model: "vrata-setup" });
-  const key = await f.interaction("vrata/api-key");
-  await saveLocalCredentials(t, f);
-  f.reply(key.id, { kind: "request_answer", value: { configured: true } });
-  assert.equal((await f.boundary()).status, "failed");
-  assert.equal(f.gateway.requests.length, 0);
-  assert.equal(f.messages.filter((m) => m.method === "interaction/request").length, 1);
-  await f.turn("Retry using native selection", { model: dynamicModel, reasoningLevel: "high" });
-  assert.equal((await f.boundary()).status, "completed");
-  assert.equal(f.gateway.requests.length, 1);
-  assert.equal(f.gateway.requests[0].body.model, dynamicModel);
-  assert.equal(f.gateway.requests[0].body.reasoning.effort, "high");
-});
-
 test("Stop during onboarding rejects a late form reply without starting Pi generation", async (t) => {
   const f = await fixture(t, {}, { configured: false });
-  await f.start({ options: { model: "vrata-setup" } });
-  await f.turn("Do not run after Stop", { model: "vrata-setup" });
+  await f.start({ options: { model: dynamicModel } });
+  await f.turn("Do not run after Stop", { model: dynamicModel });
   const key = await f.interaction("vrata/api-key");
   const stopped = await f.stop();
   const terminal = f.records().find(({ event }) => event.type === "turn/completed" && event.status === "interrupted");

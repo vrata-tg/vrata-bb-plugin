@@ -203,17 +203,5 @@ test("setup page reads and answers only a pending interaction owned by this plug
     await assert.rejects(other.rpc("submitSetupInteraction", { ...target, answer: { kind: "api-key", configured: true } }));
     assert.deepEqual(other.interactionAnswers, []);
   }
-  await assert.rejects(mock.rpc("submitSetupInteraction", { ...target, answer: { kind: "model", modelId: "m", reasoningLevel: "none" } }));
   assert.equal(mock.interactionAnswers.length, 2);
-});
-
-test("historical model setup can only be stopped, never select a model outside the native picker", async (t) => {
-  const mock = serverMock(t, { interaction: { id: "setup", threadId: "waiting-thread", status: "pending", providerId: "vrata", payload: { kind: "bb-plugin/model", data: {} } } });
-  const target = { threadId: "waiting-thread", interactionId: "setup" };
-  assert.equal((await mock.rpc("getSetupInteraction", target)).kind, "model");
-  await assert.rejects(mock.rpc("submitSetupInteraction", { ...target, answer: { kind: "model", modelId: "m", reasoningLevel: "none" } }));
-  await assert.rejects(mock.rpc("submitSetupInteraction", { ...target, answer: { kind: "api-key", configured: true } }));
-  assert.deepEqual(mock.interactionAnswers, []);
-  await mock.rpc("submitSetupInteraction", { ...target, answer: { kind: "cancel" } });
-  assert.deepEqual(mock.interactionAnswers, [{ threadId: target.threadId, stopped: true }]);
 });

@@ -226,7 +226,7 @@ function sessionPath(providerThreadId: string): string {
   return resolvePiSessionFilePath({ sessionDir: runtime.sessionDir, threadId: providerThreadId });
 }
 function normalizeModel(model: string | undefined): string | undefined {
-  if (!model || model === "vrata-setup") return undefined;
+  if (!model) return undefined;
   return `${VRATA_PROVIDER_ID}/${model.replace(/^(?:vrata|vrata\.tg)\//, "")}`;
 }
 const generations = new Map<string, AbortController>();
@@ -623,9 +623,7 @@ async function handleThreadConstruction(
     if (resumedSessionMissingCwd(providerThreadId)) throw new SetupError("Рабочая папка сохранённой сессии больше не существует");
   }
   const requestedModel = normalizeModel(params.model);
-  const normalized = { ...params, model: requestedModel,
-    ...(params.model === "vrata-setup" ? { thinkingLevel: undefined } : {}),
-  };
+  const normalized = { ...params, model: requestedModel };
   const config = readConfig(requireDataDir());
   if (!config || (!requestedModel && !existsSync(sessionPath(providerThreadId)))) {
     pendingConstruction.set(threadId, { providerThreadId, params: normalized, controller });
@@ -729,7 +727,7 @@ async function dispatchTurn(params: TurnStartParams): Promise<void> {
   if (!controller || !entry || entry.closeTask) throw new SetupError("Нет активной сессии Pi");
   const admission = entry.admission.then(async () => {
     checkCurrent(threadId, controller);
-    const options = buildPiTurnOptions(params.options.model === "vrata-setup" ? {} : params.options);
+    const options = buildPiTurnOptions(params.options);
     await entry.session.applyOptions({
       model: options.model ? resolvePiModel(options.model, entry.models) : undefined,
       thinkingLevel: options.thinkingLevel,
@@ -770,8 +768,7 @@ async function completeSetup(params: TurnStartParams, pending: PendingConstructi
     let models = buildPiModels(await fetchModels(config, pending.controller.signal), config.baseUrl);
     checkCurrent(threadId, pending.controller);
     const model = normalizeModel(params.options.model) ?? pending.params.model;
-    const thinking = params.options.model === "vrata-setup" ? pending.params.thinkingLevel
-      : buildPiTurnOptions(params.options).thinkingLevel ?? pending.params.thinkingLevel;
+    const thinking = buildPiTurnOptions(params.options).thinkingLevel ?? pending.params.thinkingLevel;
     if (!model && !existsSync(sessionPath(pending.providerThreadId))) {
       throw new SetupError("Выберите модель в меню модели bb рядом с полем ввода и отправьте запрос снова.");
     }
@@ -794,7 +791,7 @@ async function completeSetup(params: TurnStartParams, pending: PendingConstructi
     await startPiThreadSession(threadId, pending.providerThreadId, { ...pending.params, model, thinkingLevel: thinking }, models, pending.controller);
     checkCurrent(threadId, pending.controller);
     // Setup already applied and validated the selected options to this child.
-    await dispatchTurn({ ...params, options: { ...params.options, model: "vrata-setup" } });
+    await dispatchTurn({ ...params, options: { ...params.options, model: undefined, reasoningLevel: undefined } });
   } catch (error) {
     if (!pending.controller.signal.aborted && generations.get(threadId) === pending.controller) {
       const message = safeError(error);
