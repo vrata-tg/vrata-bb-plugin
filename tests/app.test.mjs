@@ -220,12 +220,43 @@ test("setup without a target asks which machine when several are connected", asy
 
 test("pending key setup only navigates after an explicit click", async (t) => {
   const { app, mount, fireEvent, waitFor } = await setup(t);
-  const view = mount(app.pendingInteractions.find(({ id }) => id === "api-key"), { interaction: interaction(), submit: async () => {} });
+  let submitted = 0;
+  const view = mount(app.pendingInteractions.find(({ id }) => id === "api-key"), {
+    interaction: interaction(), submit: async () => { submitted++; },
+  }, { rpc: { getConfiguration: async () => metadata("host-a") } });
   await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(submitted, 0);
   assert.deepEqual(view.navigateCalls, []);
   assert.equal(view.container.querySelector("form"), null);
   fireEvent.click(view.getByRole("button", { name: "Открыть подключение Врата AI" }));
   await waitFor(() => assert.deepEqual(view.navigateCalls, [{ method: "toPluginPanel", path: "setup", options: { subPath: "thread/thread-a/interaction-a" } }]));
+});
+
+test("returning to a pending key card continues once when its thread host is configured", async (t) => {
+  const { app, mount, waitFor } = await setup(t);
+  const targets = [], answers = [];
+  const view = mount(app.pendingInteractions.find(({ id }) => id === "api-key"), {
+    interaction: interaction(), submit: async (value) => { answers.push(value); },
+  }, { rpc: {
+    getConfiguration: async ({ target }) => { targets.push(target); return metadata("host-a", true); },
+  } });
+  await waitFor(() => assert.deepEqual(answers, [{ configured: true }]));
+  assert.deepEqual(targets, [{ kind: "thread", threadId: "thread-a" }]);
+  assert.deepEqual(view.navigateCalls, []);
+});
+
+test("a removed key card ignores a late configuration reply", async (t) => {
+  const { app, mount, waitFor } = await setup(t);
+  const pending = Promise.withResolvers();
+  let reads = 0, submitted = 0;
+  const view = mount(app.pendingInteractions.find(({ id }) => id === "api-key"), {
+    interaction: interaction(), submit: async () => { submitted++; },
+  }, { rpc: { getConfiguration: async () => { reads++; return pending.promise; } } });
+  await waitFor(() => assert.equal(reads, 1));
+  view.unmount();
+  pending.resolve(metadata("host-a", true));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(submitted, 0);
 });
 
 test("unavailable setup returns to the thread without reopening its old interaction", async (t) => {

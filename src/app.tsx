@@ -101,8 +101,17 @@ function CredentialsForm({ target, onConfigured }: { target: Target; onConfigure
   );
 }
 
-function KeySetupLink({ interaction }: PluginPendingInteractionProps) {
+function KeySetupLink({ interaction, submit }: PluginPendingInteractionProps) {
+  const rpc = useRpc<typeof configurationContract>();
   const navigate = useBbNavigate();
+  useEffect(() => {
+    let cancelled = false;
+    // The key may have been saved in machine settings while this thread was away.
+    void rpc.call("getConfiguration", { target: { kind: "thread", threadId: interaction.threadId } }).then(async (result) => {
+      if (!cancelled && result.configured) await submit({ configured: true });
+    }).catch(() => { /* Keep the setup link available if the host cannot be reached. */ });
+    return () => { cancelled = true; };
+  }, [rpc, interaction.id, interaction.threadId, submit]);
   const subPath = `thread/${interaction.threadId}/${interaction.id}`;
   return <button className="underline" onClick={() => navigate.toPluginPanel("setup", { subPath })}>Открыть подключение Врата AI</button>;
 }
