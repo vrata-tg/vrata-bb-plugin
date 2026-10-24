@@ -7,7 +7,7 @@ import test from "node:test";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
 import host from "../dist/host.js";
 
-const models = { data: [{ id: "gemini-3.8-flash" }] };
+const models = { data: [{ id: "gemini-3.8-flash", gateway_metadata: { max_input_tokens: 1_000_000, max_output_tokens: 128_000 } }] };
 const account = {
   checked_at: "2026-10-21T00:00:00Z",
   balance: { currency: "RUB", unit: "coin_atoms", paid_available: "20", promo_available: "3", reserved: "1", spendable: "22" },
