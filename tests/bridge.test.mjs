@@ -4,7 +4,29 @@ import { join } from "node:path";
 import { unlinkSync } from "node:fs";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
 import host from "../dist/host.js";
-import { dynamicModel, fixture, models, sleep } from "./bridge-fixture.mjs";
+import { dynamicModel, fixture, models, responsesAnswer, sleep } from "./bridge-fixture.mjs";
+
+test("GPT reasoning levels survive discovery, dispatch and session persistence", async (t) => {
+  for (const model of ["gpt-6-astra", "gpt-6-luna", "gpt-6.1-sol"]) await t.test(model, async (t) => {
+    const f = await fixture(t, {
+      onModels({ response }) {
+        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: [{ id: model }] }));
+      },
+      onResponses({ response }) { responsesAnswer(response); },
+    });
+    const catalog = (await f.rpc("model/list", {})).result.models;
+    const levels = catalog.find(({ id }) => id === model).supportedReasoningEfforts.map(({ reasoningEffort }) => reasoningEffort);
+    assert.equal(levels.includes("none"), model === "gpt-6-luna");
+    assert.ok(levels.includes("xhigh") && levels.includes("max"));
+    await f.start({ options: { model, reasoningLevel: "high" } });
+    for (const reasoningLevel of ["xhigh", "max"]) {
+      await f.turn("Preserve the selected reasoning level", { model, reasoningLevel });
+      assert.equal((await f.boundary()).status, "completed");
+      assert.equal(f.gateway.requests.at(-1).body.reasoning.effort, reasoningLevel);
+      assert.equal(f.saved().thinkingLevel, reasoningLevel);
+    }
+  });
+});
 
 async function saveLocalCredentials(t, f) {
   const harness = experimental_createHostEntryHarness(host, {
