@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { unlinkSync } from "node:fs";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
 import host from "../dist/host.js";
-import { dynamicModel, fixture, models, responsesAnswer, sleep } from "./bridge-fixture.mjs";
+import { answer, callTool, chunk, dynamicModel, dynamicTool, fixture, models, responsesAnswer, sleep } from "./bridge-fixture.mjs";
 
 test("GPT reasoning levels survive discovery, dispatch and session persistence", async (t) => {
   for (const model of ["gpt-6-astra", "gpt-6-luna", "gpt-6.1-sol"]) await t.test(model, async (t) => {
@@ -25,6 +25,38 @@ test("GPT reasoning levels survive discovery, dispatch and session persistence",
       assert.equal(f.gateway.requests.at(-1).body.reasoning.effort, reasoningLevel);
       assert.equal(f.saved().thinkingLevel, reasoningLevel);
     }
+  });
+});
+
+test("GLM reasoning and tool results survive native Chat transport", async (t) => {
+  for (const model of ["glm-5.3", "glm-5.3-flash"]) await t.test(model, async (t) => {
+    const f = await fixture(t, {
+      onModels({ response }) {
+        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: [{ id: model }] }));
+      },
+      onChat({ response, body, index }) {
+        assert.equal(body.reasoning_effort, index < 2 ? "high" : "none");
+        if (index === 0) {
+          chunk(response, { role: "assistant", reasoning_content: "Inspect the supplied value first." });
+          callTool(response);
+        } else {
+          assert.ok(body.messages.some((message) => message.role === "tool" && message.content === "GLM_TOOL_RESULT"));
+          answer(response, "GLM_TOOL_RESULT");
+        }
+      },
+    });
+    await f.start({ dynamicTools: [dynamicTool], options: { model, reasoningLevel: "high" } });
+    await f.turn("Look up the value", { model, reasoningLevel: "high" });
+    const call = await f.toolCall();
+    f.reply(call.id, { success: true, contentItems: [{ type: "inputText", text: "GLM_TOOL_RESULT" }] });
+    assert.equal((await f.boundary()).status, "completed");
+    assert.ok(f.events().some((event) => event.type === "item/reasoning/textDelta" && event.delta === "Inspect the supplied value first."));
+    assert.ok(f.saved().messages.some((message) => message.role === "assistant" && message.content.some((part) => part.type === "thinking" && part.thinking === "Inspect the supplied value first.")));
+    assert.equal(f.gateway.requests.length, 2);
+    await f.turn("Disable extended thinking", { model, reasoningLevel: "none" });
+    assert.equal((await f.boundary()).status, "completed");
+    assert.equal(f.saved().thinkingLevel, "off");
+    assert.equal(f.gateway.requests.length, 3);
   });
 });
 

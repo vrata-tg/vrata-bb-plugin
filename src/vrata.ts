@@ -27,7 +27,8 @@ function model(
   const base = apiBaseUrl(baseUrl);
   const [input, output, cacheRead = input, cacheWrite = input] = prices;
   const anthropic = kind === "a" ? anthropicModels.get(id) : undefined;
-  const thinkingLevelMap = kind === "r" ? openaiModels.get(id)?.thinkingLevelMap : undefined;
+  const thinkingLevelMap = kind === "r" ? openaiModels.get(id)?.thinkingLevelMap
+    : id.startsWith("glm-") ? { off: "none" } : undefined;
   return {
     ...anthropic,
     ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
@@ -49,8 +50,8 @@ export function knownModelMetadata(baseUrl: string): Model<Api>[] {
     model("deepseek-v4.1-flash", "r", [12, 48, 0.5], 1_000_000, 384_000, baseUrl),
     model("gemini-3.8-flash", "c", [6, 26, 0.6], 1_000_000, 64_000, baseUrl),
     model("gemini-4-argon", "c", [13, 65, 1], 1_048_576, 65_536, baseUrl),
-    model("glm-5.3", "r", [70, 240, 17], 1_000_000, 128_000, baseUrl),
-    model("glm-5.3-flash", "r", [3.5, 12, 1], 1_000_000, 128_000, baseUrl),
+    model("glm-5.3", "c", [70, 240, 17], 1_000_000, 128_000, baseUrl),
+    model("glm-5.3-flash", "c", [3.5, 12, 1], 1_000_000, 128_000, baseUrl),
     model("gpt-6-astra", "r", [40, 200, 4, 50], 1_050_000, 128_000, baseUrl),
     model("gpt-6-luna", "r", [0.6, 3, 0.06, 0.7], 1_050_000, 128_000, baseUrl),
     model("gpt-6.1-sol", "r", [12, 60, 1.2, 15], 1_050_000, 128_000, baseUrl),
