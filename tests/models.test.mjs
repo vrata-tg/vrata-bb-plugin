@@ -107,6 +107,16 @@ test("catalog validation keeps unsafe values out of Pi while honoring explicit c
   assert.deepEqual(models[1].input, ["text"]);
 });
 
+test("transport selection follows catalog metadata independently of the model name", () => {
+  for (const id of ["gemini-fixture", "unrelated-fixture"]) {
+    const catalog = ["chat_completions", "responses", undefined].map((verified_transport) => ({
+      id, protocol: "openai", gateway_metadata: { verified_transport },
+    }));
+    assert.deepEqual(buildPiModels(catalog, "https://example.test").map((model) => model.api),
+      ["openai-completions", "openai-responses", "openai-responses"]);
+  }
+});
+
 test("projection retains Pi reasoning maps and native Anthropic compatibility", () => {
   const catalog = [
     { id: "gpt-6-astra", protocol: "openai", gateway_metadata: { verified_transport: "chat_completions" } },

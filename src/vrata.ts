@@ -41,9 +41,7 @@ export function buildPiModels(catalog: VrataCatalogModel[], baseUrl: string): Mo
   return catalog.filter((entry) => entry.gateway_metadata?.supports_tools !== false).map(({ id, protocol, gateway_metadata: metadata, gateway_pricing: pricing }) => {
     const transport = !metadata?.protocol || metadata.protocol === protocol ? metadata?.verified_transport : undefined;
     const api = protocol === "anthropic" ? "anthropic-messages"
-      : transport === "chat_completions" ? "openai-completions"
-      : transport === "responses" ? "openai-responses"
-      : /^gemini(?:-|$)/i.test(id) ? "openai-completions" : "openai-responses";
+      : transport === "chat_completions" ? "openai-completions" : "openai-responses";
     const anthropic = api === "anthropic-messages" ? anthropicModels.get(id) : undefined;
     // Pi's Chat adapter sends an off effort only when it has an explicit mapping.
     const thinkingLevelMap = anthropic?.thinkingLevelMap ?? openaiModels.get(id)?.thinkingLevelMap
