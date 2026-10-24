@@ -14,6 +14,7 @@ export interface VrataCatalogModel { id: string; protocol: VrataCatalogProtocol 
 const apis = { a: "anthropic-messages", r: "openai-responses", c: "openai-completions" } as const;
 type ApiKind = keyof typeof apis;
 const anthropicModels = new Map(getBuiltinModels("anthropic").map((entry) => [entry.id, entry]));
+const openaiModels = new Map(getBuiltinModels("openai").map((entry) => [entry.id, entry]));
 
 function model(
   id: string,
@@ -26,8 +27,10 @@ function model(
   const base = apiBaseUrl(baseUrl);
   const [input, output, cacheRead = input, cacheWrite = input] = prices;
   const anthropic = kind === "a" ? anthropicModels.get(id) : undefined;
+  const thinkingLevelMap = kind === "r" ? openaiModels.get(id)?.thinkingLevelMap : undefined;
   return {
     ...anthropic,
+    ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
     id, name: id, provider: VRATA_PROVIDER_ID, api: apis[kind],
     baseUrl: kind === "a" ? new URL(base).origin : base,
     reasoning: true, input: ["text", "image"],
