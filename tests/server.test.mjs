@@ -24,9 +24,9 @@ function serverMock(t, {
     { id: "target", name: "Thread machine", status: "connected" },
     { id: "other", name: "Other machine", status: "disconnected" },
   ];
-  let registrations = 0;
   let providerDisposals = 0;
   const pickerRefreshes = [];
+  const declarations = [];
   const dispose = () => { for (const disposer of disposers.splice(0).reverse()) disposer(); };
   const bb = {
     pluginId: "bb-plugin",
@@ -43,7 +43,7 @@ function serverMock(t, {
     },
     sdk: {
       subscribe: () => () => {},
-      system: { reloadConfig: async () => { pickerRefreshes.push(registrations); await reloadConfig(); return { ok: true }; } },
+      system: { reloadConfig: async () => { pickerRefreshes.push(declarations.length); await reloadConfig(); return { ok: true }; } },
       hosts: {
         list: async () => machines,
         get: async ({ hostId }) => {
@@ -66,7 +66,7 @@ function serverMock(t, {
     rpc: { register: (contract, handlers) => {
       for (const [name, handler] of Object.entries(handlers)) methods.set(name, { handler, schema: contract[name] });
     } },
-    providers: { register: () => { registrations++; return { dispose() { providerDisposals++; } }; } },
+    providers: { register: (declaration) => { declarations.push(declaration); return { dispose() { providerDisposals++; } }; } },
     events: { on() {} },
     http: { route: (method, path, handler) => routes.set(`${method} ${path}`, handler) },
     onDispose: (callback) => disposers.push(callback),
@@ -74,8 +74,8 @@ function serverMock(t, {
   plugin(bb);
   t.after(dispose);
   return {
-    calls, lookups, machines, dispose, interactionAnswers, pickerRefreshes,
-    get registrations() { return registrations; },
+    calls, lookups, machines, dispose, interactionAnswers, pickerRefreshes, declarations,
+    get registrations() { return declarations.length; },
     get providerDisposals() { return providerDisposals; },
     async rpc(name, input) {
       const { handler, schema } = methods.get(name);
@@ -112,7 +112,9 @@ test("onboarding resolves thread → environment → host and rejects an app-sup
   assert.deepEqual(result, { ...configured, hostId: "target", hostName: "Thread machine" });
   assert.deepEqual(mock.lookups, [["thread", "waiting-thread"], ["environment", "thread-environment"], ["host", "target"]]);
   assert.equal(mock.calls.length, 1);
-  assert.deepEqual({ ...mock.calls[0], signal: undefined }, { method: "saveCredentials", input: draft, hostId: "target", signal: undefined });
+  const client = { distribution: "vrata-bb-plugin", bbVersion: process.env.BB_APP_VERSION ?? "unknown" };
+  assert.deepEqual({ ...mock.calls[0], signal: undefined }, { method: "saveCredentials", input: { ...draft, client }, hostId: "target", signal: undefined });
+  assert.deepEqual(mock.declarations[0].experimental_bridgeOptions, { vrataClient: client });
   assert.doesNotMatch(JSON.stringify(result), /synthetic-key|apiKey/);
   assert.equal(mock.registrations, 2);
   assert.equal(mock.providerDisposals, 1);

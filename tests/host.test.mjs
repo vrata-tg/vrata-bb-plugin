@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
+import { tmpdir, arch, platform, release } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
@@ -93,6 +93,25 @@ test("save validates only model GETs, preserves an opaque key and atomically rot
   await assert.rejects(readFile(f.credentialsPath), { code: "ENOENT" });
   assert.deepEqual(await f.harness.experimental_call("balance", null), { status: "unconfigured" });
   assert.equal(second.requests.length, 2);
+});
+
+test("host validation and balance include the distribution, both versions and local OS", async (t) => {
+  const { version } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  for (const distribution of ["vrata-bb", "vrata-bb-plugin"]) {
+    const seen = [];
+    const api = await upstream(t, (request, response) => {
+      seen.push(request.headers["user-agent"]);
+      json(response, request.url === "/v1/account" ? account : models);
+    });
+    const f = await fixture(t);
+    const client = { distribution, bbVersion: "0.46.1" };
+    await f.harness.experimental_call("saveCredentials", { apiKey: "synthetic-user-agent", baseUrl: api.baseUrl, client });
+    assert.equal((await f.harness.experimental_call("balance", { client })).status, "ok");
+    const product = distribution === "vrata-bb"
+      ? `vrata-bb/0.46.1 vrata-bb-plugin/${version}` : `vrata-bb-plugin/${version} bb/0.46.1`;
+    assert.deepEqual(seen, Array(3).fill(`${product} (${platform()} ${release()}; ${arch()})`));
+    assert.deepEqual(await f.read(), { apiKey: "synthetic-user-agent", baseUrl: `${api.baseUrl}/v1` });
+  }
 });
 
 test("invalid key, malformed catalog, empty catalog and invalid URL preserve the previous file with safe errors", async (t) => {

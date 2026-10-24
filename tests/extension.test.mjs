@@ -6,12 +6,15 @@ import test from "node:test";
 import { createAgentSessionServices, createAgentSessionFromServices, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { VRATA_EXTENSION_SOURCE, VRATA_PI_SETTINGS } from "../dist/tests/vrata-extension.js";
 import { buildPiModels, fetchModels } from "../dist/tests/vrata.js";
+import { buildUserAgent } from "../dist/tests/user-agent.js";
 import { createGateway, answer, chunk, finish, models } from "./bridge-fixture.mjs";
 
 async function nativeSession(t, config, model = models.chat, thinkingLevel = "off") {
   const dir = mkdtempSync(join(tmpdir(), "vrata-extension-"));
   const credentials = join(dir, "credentials.json"), extension = join(dir, "vrata.mjs");
   const previous = process.env.VRATA_CREDENTIALS_PATH, previousCatalog = process.env.VRATA_MODEL_CATALOG;
+  const previousUserAgent = process.env.VRATA_USER_AGENT;
+  process.env.VRATA_USER_AGENT = buildUserAgent({ distribution: "vrata-bb-plugin", bbVersion: "0.41.0" });
   process.env.VRATA_CREDENTIALS_PATH = credentials;
   process.env.VRATA_MODEL_CATALOG = JSON.stringify(buildPiModels(await fetchModels(config), config.baseUrl));
   const configure = (value) => {
@@ -28,6 +31,8 @@ async function nativeSession(t, config, model = models.chat, thinkingLevel = "of
     else process.env.VRATA_CREDENTIALS_PATH = previous;
     if (previousCatalog === undefined) delete process.env.VRATA_MODEL_CATALOG;
     else process.env.VRATA_MODEL_CATALOG = previousCatalog;
+    if (previousUserAgent === undefined) delete process.env.VRATA_USER_AGENT;
+    else process.env.VRATA_USER_AGENT = previousUserAgent;
     rmSync(dir, { recursive: true, force: true });
   });
   const settingsManager = SettingsManager.inMemory({
@@ -67,6 +72,7 @@ for (const [kind, path] of [["chat", "/v1/chat/completions"], ["responses", "/v1
     await session.prompt("fixture transport check");
     assert.equal(server.requests.length, 1);
     const request = server.requests[0];
+    assert.equal(request.userAgent, process.env.VRATA_USER_AGENT);
     assert.equal(request.path, path);
     assert.ok(request.apiKey === key || request.authorization === `Bearer ${key}`, "credential was not sent opaquely");
     assert.ok(JSON.stringify(request.body).includes("fixture transport check"), "native request omitted prompt");
@@ -95,6 +101,7 @@ test("native retry keeps the active key+URL snapshot and redacts secrets before 
   native = await nativeSession(t, { apiKey: keyA, baseUrl: serverA.url });
   await native.session.prompt("retry fixture");
   assert.equal(serverA.requests.length, 2, "native automatic retry did not run exactly once");
+  assert.ok(serverA.requests.every((r) => r.userAgent === process.env.VRATA_USER_AGENT));
   assert.equal(serverB.requests.length, 0, "in-flight operation changed endpoint");
   assert.ok(serverA.requests.every((r) => r.authorization === `Bearer ${keyA}`), "retry changed credential snapshot");
   assert.ok(native.events.some((event) => event.type === "auto_retry_start"), "native retry event missing");
@@ -147,6 +154,7 @@ test("manual native compaction retries with redacted diagnostics and persists it
   const result = await native.session.compact();
   assert.equal(result.summary, "Native summary fixture");
   assert.equal(server.requests.length, 4, "native compaction retry count changed");
+  assert.ok(server.requests.every((r) => r.userAgent === process.env.VRATA_USER_AGENT));
   assert.ok(native.events.some((event) => event.type === "summarization_retry_scheduled"), "native summary retry event missing");
   assert.ok(native.manager.getEntries().some((entry) => entry.type === "compaction" && entry.summary === result.summary));
   const serialized = native.serialized();

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { buildUserAgent } from "./user-agent.js";
 
 const atoms = z.string().regex(/^-?\d{1,40}$/);
 
@@ -29,10 +30,10 @@ export const balanceResultSchema = z.discriminatedUnion("status", [
 
 export type BalanceResult = z.infer<typeof balanceResultSchema>;
 
-export async function fetchBalance(apiUrl: string, apiKey: string, signal?: AbortSignal): Promise<BalanceResult> {
+export async function fetchBalance(apiUrl: string, apiKey: string, signal?: AbortSignal, userAgent = buildUserAgent()): Promise<BalanceResult> {
   try {
     const response = await fetch(`${apiUrl}/account`, {
-      headers: { authorization: `Bearer ${apiKey}` },
+      headers: { authorization: `Bearer ${apiKey}`, "User-Agent": userAgent },
       cache: "no-store",
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
     });

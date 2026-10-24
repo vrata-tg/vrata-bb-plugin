@@ -63,3 +63,8 @@ or publish a release without an explicit request.
 Save and commit investigation notes, reports and durable findings in
 https://github.com/vrata-tg/ai-memory, following that repository's AGENTS.md.
 Keep operational development instructions here.
+
+Keep README focused on installation, setup and usage. Update the relevant text
+only when those user instructions change; do not append a note for each PR.
+Put implementation details, verification results and change history in PR
+descriptions and the reports above.

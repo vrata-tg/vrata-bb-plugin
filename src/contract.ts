@@ -4,6 +4,12 @@ import { balanceResultSchema } from "./balance.js";
 
 export const DEFAULT_BASE_URL = "https://api.vrata.tg";
 
+export const vrataClientSchema = z.object({
+  distribution: z.enum(["vrata-bb", "vrata-bb-plugin"]),
+  bbVersion: z.string().min(1),
+}).strict();
+export type VrataClient = z.infer<typeof vrataClientSchema>;
+
 const hostId = z.string().min(1);
 const target = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("thread"), threadId: z.string().min(1) }).strict(),
@@ -31,9 +37,9 @@ export const accountContract = defineRpcContract({
 
 export const credentialsContract = defineRpcContract({
   getConfiguration: { input: z.null(), output: localConfiguration },
-  saveCredentials: { input: credentials, output: localConfiguration },
+  saveCredentials: { input: credentials.extend({ client: vrataClientSchema.optional() }), output: localConfiguration },
   deleteCredentials: { input: z.null(), output: localConfiguration },
-  balance: { input: z.null(), output: balanceResultSchema },
+  balance: { input: z.object({ client: vrataClientSchema }).strict().nullable(), output: balanceResultSchema },
 });
 
 const setupTarget = z.object({ threadId: z.string().min(1), interactionId: z.string().min(1) });

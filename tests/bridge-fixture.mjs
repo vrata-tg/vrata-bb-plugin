@@ -107,7 +107,7 @@ export async function createGateway({ onChat, onResponses, onAnthropic, onModels
       let raw = "";
       for await (const data of request) raw += data;
       const body = JSON.parse(raw);
-      requests.push({ path, body, authorization: request.headers.authorization, apiKey: request.headers["x-api-key"] });
+      requests.push({ path, body, authorization: request.headers.authorization, apiKey: request.headers["x-api-key"], userAgent: request.headers["user-agent"] });
       response.fixtureIndex = requests.length - 1;
       const [handler, respond] = routes[path];
       if (handler) await handler({ request, response, body, index: requests.length - 1 }); else respond(response);
@@ -166,7 +166,7 @@ export function jsonlChild(command, args, { cwd, env }) {
   };
 }
 
-export async function fixture(t, gatewayOptions = {}, { configured = true, settings = {}, closeHook = false, traceChildren = false, pluginId = "vrata" } = {}) {
+export async function fixture(t, gatewayOptions = {}, { configured = true, settings = {}, closeHook = false, traceChildren = false, pluginId = "vrata", vrataClient } = {}) {
   const root = mkdtempSync(join(tmpdir(), "vrata-native-test-"));
   const cwd = join(root, "workspace"), dataDir = join(root, "bridge-data"), home = join(root, "home");
   for (const path of [cwd, dataDir, home]) mkdirSync(path);
@@ -231,7 +231,13 @@ export async function fixture(t, gatewayOptions = {}, { configured = true, setti
     transport = jsonlChild(spec.command, closeHook ? ["--input-type=module", "--eval", probe] : spec.args, { cwd: spec.cwd, env }); children.push(transport);
   };
   launch();
-  const rpc = (method, params) => transport.request(method, params);
+  const rpc = (method, params) => {
+    if (vrataClient && method !== "initialize") {
+      const providerOptions = { vrataClient };
+      params = params.options ? { ...params, options: { ...params.options, providerOptions } } : { ...params, providerOptions };
+    }
+    return transport.request(method, params);
+  };
   const initialize = () => rpc("initialize", { client: { name: "native-fixture", version: "1" }, protocolVersion: 2 });
   await initialize();
   const deltas = (threadId = current?.threadId) => transport.messages.filter((m) => m.method === "thread/delta" && m.params.threadId === threadId).flatMap((m) => m.params.deltas);

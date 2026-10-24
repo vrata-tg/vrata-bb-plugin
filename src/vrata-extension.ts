@@ -110,6 +110,7 @@ export default function vrataExtension(pi) {
       }
       const requestOptions = {
         ...options,
+        headers: { ...options?.headers, "User-Agent": process.env.VRATA_USER_AGENT },
         // Auth may have been resolved before a before_agent_start hook. Bind
         // key and endpoint to the same operation snapshot at dispatch as well.
         ...(config ? { apiKey: config.apiKey } : {}),
