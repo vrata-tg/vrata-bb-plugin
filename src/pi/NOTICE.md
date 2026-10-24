@@ -8,8 +8,8 @@ The original [MIT license](LICENSE) is retained.
 The integration is maintained as part of this plugin. It uses one embedded Pi
 RPC process per session, direct BB event translation, native model/thinking
 commands, and the public Pi SessionManager for checkpoint forks. Model metadata
-comes from the shared Vrata guide configuration. Onboarding, credential
-redaction, cancellation and BB dynamic-tool calls are integrated here.
+comes from the Vrata API catalog and pinned Pi reasoning definitions. Onboarding,
+credential redaction, cancellation and BB dynamic-tool calls are integrated here.
 
 The unmodified Pi runtime is sourced separately from pinned npm dependencies;
 see [the Pi runtime notice](../../packaging/pi/NOTICE.md).

@@ -9,6 +9,7 @@ import { StringDecoder } from "node:string_decoder";
 import { setTimeout as delay } from "node:timers/promises";
 import { experimental_createBridgeDeltaEventCollector, experimental_resolveProviderBridgeLaunch } from "@get-bb/plugin-sdk/provider-bridge/testing";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { buildPiModels, fetchModels } from "../dist/tests/vrata.js";
 
 export const models = {
   chat: "gemini-3.8-flash",
@@ -16,6 +17,15 @@ export const models = {
   anthropic: "claude-sonnet-5-5",
 };
 export const dynamicModel = "server-added-model";
+function catalogEntry(id, protocol) {
+  return { id,
+    gateway_metadata: { protocol, verified_transport: protocol === "anthropic" ? "messages"
+      : id === models.chat ? "chat_completions" : "responses",
+      supports_tools: true, supports_images: true, max_input_tokens: 1_000_000, max_output_tokens: 128_000 },
+    gateway_pricing: { currency: "RUB", unit: "token", prompt: "0.000002", completion: "0.000008",
+      input_cache_read: "0.000001", input_cache_write: "0.000003" },
+  };
+}
 export const options = {
   model: models.chat, reasoningLevel: "none", permissionMode: "full",
   permissionScope: "full", approvalReviewer: null, permissionEscalation: null,
@@ -88,7 +98,7 @@ export async function createGateway({ onChat, onResponses, onAnthropic, onModels
       if (path === "/v1/models") {
         catalogRequests.push(request);
         const ids = request.headers["anthropic-version"] ? [models.anthropic] : [models.chat, models.responses, dynamicModel];
-        const respond = () => response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ object: "list", data: ids.map((id) => ({ id })) }));
+        const respond = () => response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ object: "list", data: ids.map((id) => catalogEntry(id, request.headers["anthropic-version"] ? "anthropic" : "openai")) }));
         if (onModels) await onModels({ request, response, respond }); else respond();
         return;
       }
@@ -309,10 +319,10 @@ export async function fixture(t, gatewayOptions = {}, { configured = true, setti
       const cli = join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))), "bundle", "cli.js");
       const referencePackage = JSON.parse(readFileSync(join(dirname(dirname(cli)), "..", "package.json"), "utf8"));
       assert.equal(referencePackage.version, "1.3.0", "Raw parity oracle must use pinned Pi 1.3.0");
-      const { knownModelMetadata } = await import("../dist/tests/vrata.js");
+      const catalog = await fetchModels({ apiKey: "synthetic-key-a", baseUrl: gateway.url });
       const extensionPath = join(root, "raw-guide.mjs");
       // Ordinary user guide registration: no candidate auth/redaction/stream wrapper.
-      writeFileSync(extensionPath, `export default function(pi) { pi.registerProvider("vrata.tg", ${JSON.stringify({ baseUrl: gateway.url + "/v1", apiKey: "synthetic-key-a", models: knownModelMetadata(gateway.url) })}); }`);
+      writeFileSync(extensionPath, `export default function(pi) { pi.registerProvider("vrata.tg", ${JSON.stringify({ baseUrl: gateway.url + "/v1", apiKey: "synthetic-key-a", models: buildPiModels(catalog, gateway.url) })}); }`);
       const child = jsonlChild(process.execPath, [cli, "--mode", "rpc", "--session", sessionFile, "--session-dir", runtime.sessionDir, "--extension", extensionPath, ...(model ? ["--model", model.includes("/") ? model : `vrata.tg/${model}`] : []), ...(thinking ? ["--thinking", thinking] : []), ...extraArgs], { cwd, env });
       children.push(child);
       await child.request("get_state", {}, true);
