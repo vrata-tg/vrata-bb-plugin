@@ -4,13 +4,45 @@ import { join } from "node:path";
 import { unlinkSync } from "node:fs";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
 import host from "../dist/host.js";
-import { dynamicModel, fixture, models, responsesAnswer, sleep } from "./bridge-fixture.mjs";
+import { dynamicModel, dynamicTool, fixture, models, responsesAnswer, sleep } from "./bridge-fixture.mjs";
+
+test("new model names use catalog transports through native Pi and persist selection", async (t) => {
+  for (const [transport, path] of [["chat_completions", "/v1/chat/completions"], ["responses", "/v1/responses"], ["messages", "/v1/messages"]]) {
+    await t.test(transport, async (t) => {
+      const model = `brand-new-${transport}`;
+      const protocol = transport === "messages" ? "anthropic" : "openai";
+      const f = await fixture(t, {
+        onModels({ request, response }) {
+          const requested = request.headers["anthropic-version"] ? "anthropic" : "openai";
+          response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: requested === protocol ? [{
+            id: model, gateway_metadata: { protocol, verified_transport: transport, supports_tools: true },
+          }] : [] }));
+        },
+      });
+      await f.start({ dynamicTools: [dynamicTool], options: { model, reasoningLevel: "high" } });
+      await f.turn("Use the server catalog", { model, reasoningLevel: "high" });
+      assert.equal((await f.boundary()).status, "completed");
+      const request = f.gateway.requests[0];
+      assert.equal(request.path, path);
+      assert.equal(request.body.model, model);
+      assert.ok(request.body.tools.length > 0);
+      assert.equal(f.saved().model.modelId, model);
+      assert.equal(f.saved().thinkingLevel, "high");
+      if (transport === "chat_completions") {
+        await f.turn("Disable extended thinking", { model, reasoningLevel: "none" });
+        assert.equal((await f.boundary()).status, "completed");
+        assert.equal(f.gateway.requests.at(-1).body.reasoning_effort, "none");
+        assert.equal(f.saved().thinkingLevel, "off");
+      }
+    });
+  }
+});
 
 test("GPT reasoning levels survive discovery, dispatch and session persistence", async (t) => {
   for (const model of ["gpt-6-astra", "gpt-6-luna", "gpt-6.1-sol"]) await t.test(model, async (t) => {
     const f = await fixture(t, {
-      onModels({ response }) {
-        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: [{ id: model }] }));
+      onModels({ request, response }) {
+        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: request.headers["anthropic-version"] ? [] : [{ id: model }] }));
       },
       onResponses({ response }) { responsesAnswer(response); },
     });

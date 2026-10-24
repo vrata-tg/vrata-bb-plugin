@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { createAgentSessionServices, createAgentSessionFromServices, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { VRATA_EXTENSION_SOURCE, VRATA_PI_SETTINGS } from "../dist/tests/vrata-extension.js";
-import { knownModelMetadata } from "../dist/tests/vrata.js";
+import { buildPiModels, fetchModels } from "../dist/tests/vrata.js";
 import { createGateway, answer, chunk, finish, models } from "./bridge-fixture.mjs";
 
 async function nativeSession(t, config, model = models.chat, thinkingLevel = "off") {
@@ -13,7 +13,7 @@ async function nativeSession(t, config, model = models.chat, thinkingLevel = "of
   const credentials = join(dir, "credentials.json"), extension = join(dir, "vrata.mjs");
   const previous = process.env.VRATA_CREDENTIALS_PATH, previousCatalog = process.env.VRATA_MODEL_CATALOG;
   process.env.VRATA_CREDENTIALS_PATH = credentials;
-  process.env.VRATA_MODEL_CATALOG = JSON.stringify(knownModelMetadata(config.baseUrl));
+  process.env.VRATA_MODEL_CATALOG = JSON.stringify(buildPiModels(await fetchModels(config), config.baseUrl));
   const configure = (value) => {
     writeFileSync(credentials + ".next", JSON.stringify(value), { mode: 0o600 });
     renameSync(credentials + ".next", credentials);
@@ -75,7 +75,7 @@ for (const [kind, path] of [["chat", "/v1/chat/completions"], ["responses", "/v1
     assert.equal(effort, "high", "native transport lost reasoning selection");
     assert.equal(session.messages.at(-1).stopReason, "stop");
     assert.equal(session.messages.at(-1).content.find((part) => part.type === "text")?.text, "Loopback answer");
-    const [inputPrice, outputPrice] = kind === "anthropic" ? [10, 51] : kind === "responses" ? [12, 60] : [6, 26];
+    const [inputPrice, outputPrice] = [2, 8];
     assert.equal(session.messages.at(-1).usage.cost.input, inputPrice / 1_000_000 * 10);
     assert.equal(session.messages.at(-1).usage.cost.output, outputPrice / 1_000_000 * 4);
   });

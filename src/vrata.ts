@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
@@ -10,64 +11,55 @@ export const VRATA_PROVIDER_ID = "vrata.tg";
 export interface VrataConfig { apiKey: string; baseUrl: string }
 export type VrataReasoningLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 export type VrataCatalogProtocol = "openai" | "anthropic";
-export interface VrataCatalogModel { id: string; protocol: VrataCatalogProtocol }
-const apis = { a: "anthropic-messages", r: "openai-responses", c: "openai-completions" } as const;
-type ApiKind = keyof typeof apis;
+const tokenLimit = z.number().int().positive().nullish().catch(undefined);
+const pricePerMillion = z.string().regex(/^\d+(?:\.\d+)?$/)
+  .transform((value) => Number(value) * 1_000_000).pipe(z.number().nonnegative()).optional().catch(undefined);
+const catalogRowSchema = z.object({
+  id: z.string().min(1).max(200),
+  gateway_metadata: z.object({
+    name: z.string().min(1).max(200).nullish().catch(undefined),
+    protocol: z.enum(["openai", "anthropic"]).nullish().catch(undefined),
+    verified_transport: z.enum(["chat_completions", "responses", "messages"]).nullish().catch(undefined),
+    max_input_tokens: tokenLimit,
+    max_output_tokens: tokenLimit,
+    supports_tools: z.boolean().nullish().catch(undefined),
+    supports_images: z.boolean().nullish().catch(undefined),
+  }).nullish().catch(undefined),
+  gateway_pricing: z.object({
+    currency: z.literal("RUB"), unit: z.literal("token"),
+    prompt: pricePerMillion, completion: pricePerMillion,
+    input_cache_read: pricePerMillion, input_cache_write: pricePerMillion,
+  }).nullish().catch(undefined),
+});
+export type VrataCatalogModel = z.infer<typeof catalogRowSchema> & { protocol: VrataCatalogProtocol };
 const anthropicModels = new Map(getBuiltinModels("anthropic").map((entry) => [entry.id, entry]));
 const openaiModels = new Map(getBuiltinModels("openai").map((entry) => [entry.id, entry]));
 
-function model(
-  id: string,
-  kind: ApiKind,
-  prices: [number, number, number?, number?],
-  contextWindow: number,
-  maxTokens: number,
-  baseUrl: string,
-): Model<Api> {
-  const base = apiBaseUrl(baseUrl);
-  const [input, output, cacheRead = input, cacheWrite = input] = prices;
-  const anthropic = kind === "a" ? anthropicModels.get(id) : undefined;
-  const thinkingLevelMap = kind === "r" ? openaiModels.get(id)?.thinkingLevelMap : undefined;
-  return {
-    ...anthropic,
-    ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
-    id, name: id, provider: VRATA_PROVIDER_ID, api: apis[kind],
-    baseUrl: kind === "a" ? new URL(base).origin : base,
-    reasoning: true, input: ["text", "image"],
-    cost: { input, output, cacheRead, cacheWrite }, contextWindow, maxTokens,
-  };
-}
-
-/** Trusted Pi metadata for known models, retained when those models are listed by the server. */
-export function knownModelMetadata(baseUrl: string): Model<Api>[] {
-  return [
-    model("claude-fable-5-1", "a", [60, 300, 1.5, 74], 1_000_000, 128_000, baseUrl),
-    model("claude-haiku-5-5", "a", [5.5, 26.5, 0.55, 6.6], 1_000_000, 128_000, baseUrl),
-    model("claude-opus-4-8", "a", [25, 128, 2.6, 32], 1_000_000, 128_000, baseUrl),
-    model("claude-opus-5-5", "a", [24, 120, 1.2, 30], 1_000_000, 128_000, baseUrl),
-    model("claude-sonnet-5-5", "a", [10, 51, 1, 13], 1_000_000, 128_000, baseUrl),
-    model("deepseek-v4.1-flash", "r", [12, 48, 0.5], 1_000_000, 384_000, baseUrl),
-    model("gemini-3.8-flash", "c", [6, 26, 0.6], 1_000_000, 64_000, baseUrl),
-    model("gemini-4-argon", "c", [13, 65, 1], 1_048_576, 65_536, baseUrl),
-    model("glm-5.3", "r", [70, 240, 17], 1_000_000, 128_000, baseUrl),
-    model("glm-5.3-flash", "r", [3.5, 12, 1], 1_000_000, 128_000, baseUrl),
-    model("gpt-6-astra", "r", [40, 200, 4, 50], 1_050_000, 128_000, baseUrl),
-    model("gpt-6-luna", "r", [0.6, 3, 0.06, 0.7], 1_050_000, 128_000, baseUrl),
-    model("gpt-6.1-sol", "r", [12, 60, 1.2, 15], 1_050_000, 128_000, baseUrl),
-    model("grok-4.7", "r", [8, 24, 2], 1_000_000, 1_000_000, baseUrl),
-  ];
-}
-
-/** Use server availability as the catalog; the guide supplies metadata when known. */
+/** Availability and gateway metadata come from the API; Pi owns native reasoning semantics. */
 export function buildPiModels(catalog: VrataCatalogModel[], baseUrl: string): Model<Api>[] {
-  const known = new Map(knownModelMetadata(baseUrl).map((model) => [model.id, model]));
-  return catalog.map(({ id, protocol }) => {
-    const existing = known.get(id);
-    if (existing) return existing;
-
-    const kind = protocol === "anthropic" ? "a"
-      : /^gemini(?:-|$)/i.test(id) ? "c" : "r";
-    return model(id, kind, [0, 0], 128_000, 16_384, baseUrl);
+  const base = apiBaseUrl(baseUrl);
+  return catalog.filter((entry) => entry.gateway_metadata?.supports_tools !== false).map(({ id, protocol, gateway_metadata: metadata, gateway_pricing: pricing }) => {
+    const transport = !metadata?.protocol || metadata.protocol === protocol ? metadata?.verified_transport : undefined;
+    const api = protocol === "anthropic" ? "anthropic-messages"
+      : transport === "chat_completions" ? "openai-completions"
+      : transport === "responses" ? "openai-responses"
+      : /^gemini(?:-|$)/i.test(id) ? "openai-completions" : "openai-responses";
+    const anthropic = api === "anthropic-messages" ? anthropicModels.get(id) : undefined;
+    // Pi's Chat adapter sends an off effort only when it has an explicit mapping.
+    const thinkingLevelMap = anthropic?.thinkingLevelMap ?? openaiModels.get(id)?.thinkingLevelMap
+      ?? (api === "openai-completions" ? { off: "none" } : undefined);
+    const input = pricing?.prompt ?? 0;
+    return {
+      ...anthropic,
+      ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
+      id, name: metadata?.name ?? id, provider: VRATA_PROVIDER_ID, api,
+      baseUrl: api === "anthropic-messages" ? new URL(base).origin : base,
+      reasoning: true, input: metadata?.supports_images === false ? ["text"] : ["text", "image"],
+      cost: { input, output: pricing?.completion ?? 0,
+        cacheRead: pricing?.input_cache_read ?? input, cacheWrite: pricing?.input_cache_write ?? input },
+      contextWindow: metadata?.max_input_tokens ?? 128_000,
+      maxTokens: metadata?.max_output_tokens ?? 16_384,
+    };
   });
 }
 
@@ -117,9 +109,10 @@ export async function fetchModels(config: VrataConfig, signal?: AbortSignal): Pr
     if (!body || typeof body !== "object" || !Array.isArray((body as { data?: unknown }).data)) {
       throw new Error("Некорректный ответ каталога моделей");
     }
-    return (body as { data: { id?: unknown }[] }).data
-      .filter((row): row is { id: string } => !!row && typeof row.id === "string" && !!row.id && row.id.length <= 200)
-      .map(({ id }) => ({ id, protocol }));
+    return (body as { data: unknown[] }).data.flatMap((row) => {
+      const parsed = catalogRowSchema.safeParse(row);
+      return parsed.success ? [{ ...parsed.data, protocol }] : [];
+    });
   }
   const [openai, anthropic] = await Promise.allSettled([load("openai"), load("anthropic")]);
   signal?.throwIfAborted();

@@ -167,7 +167,7 @@ async function probe(cleanup, pluginRoot = fileURLToPath(new URL("../", import.m
   let fixture;
   const server = createServer(async (request, response) => {
     if (request.url === "/v1/models") {
-      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: [{
+      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: request.headers["anthropic-version"] ? [] : [{
         id: "gemini-3.8-flash",
         gateway_metadata: { supports_tools: true, supports_images: true, verified_transport: "chat_completions" },
       }] }));
