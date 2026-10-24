@@ -7,6 +7,7 @@ import { credentialsContract, DEFAULT_BASE_URL } from "./contract.js";
 import { fetchBalance } from "./balance.js";
 import { apiBaseUrl, fetchModels, readConfig } from "./vrata.js";
 import { resolvePiNativeRoots } from "./native-roots.js";
+import { buildUserAgent } from "./user-agent.js";
 
 export { experimental_providerBridge } from "./bridge.js";
 
@@ -26,12 +27,12 @@ export default experimental_defineHostEntry({
       const config = readConfig(bridgeDataDir(context.experimental_paths.dataDir));
       return { configured: !!config, baseUrl: config?.baseUrl ?? DEFAULT_BASE_URL };
     },
-    saveCredentials: async ({ apiKey, baseUrl }, context) => {
+    saveCredentials: async ({ apiKey, baseUrl, client }, context) => {
       try {
         context.signal.throwIfAborted();
         const config = { apiKey, baseUrl: apiBaseUrl(baseUrl) };
         const mutation = ++credentialMutation;
-        const models = await fetchModels(config, context.signal);
+        const models = await fetchModels(config, context.signal, buildUserAgent(client));
         context.signal.throwIfAborted();
         if (!models.length || mutation !== credentialMutation) throw new Error("Save was not accepted");
 
@@ -60,9 +61,9 @@ export default experimental_defineHostEntry({
         throw new Error("Не удалось удалить ключ Врата AI на этой машине. Повторите попытку.");
       }
     },
-    balance: (_input, context) => {
+    balance: (input, context) => {
       const config = readConfig(bridgeDataDir(context.experimental_paths.dataDir));
-      return config ? fetchBalance(config.baseUrl, config.apiKey, context.signal) : { status: "unconfigured" as const };
+      return config ? fetchBalance(config.baseUrl, config.apiKey, context.signal, buildUserAgent(input?.client)) : { status: "unconfigured" as const };
     },
   },
 });

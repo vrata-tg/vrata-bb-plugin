@@ -1,8 +1,14 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { accountContract, configurationContract, credentialsContract, onboardingContract, type ConfigurationTarget } from "./contract.js";
 import { registerBalanceEvents } from "./balance-events.js";
+import manifest from "../package.json" with { type: "json" };
+import type { VrataClient } from "./contract.js";
 
 export default function plugin(bb: BbPluginApi): void {
+  const client: VrataClient = {
+    distribution: "vrataDistribution" in manifest && manifest.vrataDistribution === "vrata-bb" ? "vrata-bb" : "vrata-bb-plugin",
+    bbVersion: process.env.BB_APP_VERSION ?? "unknown",
+  };
   const host = bb.hosts.experimental_client({ contract: credentialsContract });
   const controller = new AbortController();
   const signal = controller.signal;
@@ -48,7 +54,7 @@ export default function plugin(bb: BbPluginApi): void {
     async saveCredentials({ target, apiKey, baseUrl }) {
       try {
         const machine = await resolveTarget(target);
-        const config = await host.call("saveCredentials", { apiKey, baseUrl }, { hostId: machine.id, signal });
+        const config = await host.call("saveCredentials", { apiKey, baseUrl, client }, { hostId: machine.id, signal });
         signal.throwIfAborted();
         if (!config.configured) throw new Error("Host did not confirm configuration");
         await refreshProvider();
@@ -78,7 +84,7 @@ export default function plugin(bb: BbPluginApi): void {
     async balance({ hostId }) {
       try {
         const machine = await resolveTarget({ kind: "host", hostId });
-        const balance = await host.call("balance", null, { hostId: machine.id, signal });
+        const balance = await host.call("balance", { client }, { hostId: machine.id, signal });
         signal.throwIfAborted();
         return balance;
       } catch {
@@ -115,6 +121,7 @@ export default function plugin(bb: BbPluginApi): void {
     displayName: "Врата AI",
     icon: "./media/vrata.svg",
     family: "pi",
+    experimental_bridgeOptions: { vrataClient: client },
     strings: {
       signInHint: "Добавьте ключ на странице Врата AI.",
       expiredHint: "Проверьте ключ и баланс Врата AI в настройках плагина.",

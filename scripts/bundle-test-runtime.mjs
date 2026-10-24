@@ -16,6 +16,7 @@ await build({
   entryPoints: {
     "pi-events": fileURLToPath(new URL("../src/pi/events.ts", import.meta.url)),
     "pi-child": fileURLToPath(new URL("../src/pi/child.ts", import.meta.url)),
+    "user-agent": fileURLToPath(new URL("../src/user-agent.ts", import.meta.url)),
   },
   outdir: fileURLToPath(output),
   bundle: true, platform: "node", format: "esm", target: "node22",

@@ -54,6 +54,8 @@ import { preparePiRuntime } from "./pi-runtime.js";
 import { ensureLegacySession } from "./legacy-session.js";
 import { buildPiModels, readConfig, VRATA_PROVIDER_ID, supportedReasoningLevels, fetchModels, buildPiAvailableModels } from "./vrata.js";
 import { createCredentialRedactor } from "./pi/redact.js";
+import { vrataClientSchema } from "./contract.js";
+import { buildUserAgent } from "./user-agent.js";
 import type { PiRuntimeOptions } from "./pi/child.js";
 import {
   PiRpcSession,
@@ -62,6 +64,8 @@ import {
 import {
   resolvePiSessionFilePath,
 } from "./pi/session-paths.js";
+
+const vrataRequestOptionsSchema = z.object({ providerOptions: z.object({ vrataClient: vrataClientSchema }) });
 
 const piCommandSchema = z.discriminatedUnion("method", [
   z.object({
@@ -202,6 +206,7 @@ let dataDir: string | undefined;
 let runtimePromise: Promise<Awaited<ReturnType<typeof preparePiRuntime>>> | undefined;
 let runtime: Awaited<ReturnType<typeof preparePiRuntime>> | undefined;
 let bridgeClosed = false;
+let userAgent = buildUserAgent();
 function requireDataDir(): string {
   if (!dataDir) throw new SetupError("Рантайм Врата AI не инициализирован");
   return dataDir;
@@ -217,7 +222,7 @@ function childRuntime(models: Model<Api>[]): PiRuntimeOptions {
   if (!runtime) throw new SetupError("Рантайм Врата AI не инициализирован");
   return {
     launch: { command: process.execPath, args: [runtime.rpcEntry] },
-    env: { ...runtime.env, VRATA_MODEL_CATALOG: JSON.stringify(models) },
+    env: { ...runtime.env, VRATA_MODEL_CATALOG: JSON.stringify(models), VRATA_USER_AGENT: userAgent },
     extensionPath: runtime.extensionPath,
   };
 }
@@ -379,6 +384,9 @@ function reportPromptSettled(threadId: string, entry: ThreadSession, error?: unk
 async function handleRequest(
   request: PiCommand & { id: string | number },
 ): Promise<void> {
+  const params = request.params;
+  const options = vrataRequestOptionsSchema.safeParse("options" in params ? params.options : params);
+  if (options.success) userAgent = buildUserAgent(options.data.providerOptions.vrataClient);
   switch (request.method) {
     case "initialize": {
       const result: InitializeResult = {
@@ -481,7 +489,7 @@ async function handleModelList(id: string | number, _params: { cwd?: string }): 
     return;
   }
   try {
-    const catalog = await fetchModels(config);
+    const catalog = await fetchModels(config, undefined, userAgent);
     sendResult(id, buildPiAvailableModels(buildPiModels(catalog, config.baseUrl)));
   } catch {
     sendError(id, -32000, "Не удалось получить каталог моделей Врата AI");
@@ -494,7 +502,7 @@ async function handleProviderHealth(id: string | number, _params: { cwd?: string
   let statusMessage: string | null = "Добавьте ключ Врата AI на этой машине";
   if (config) {
     try {
-      const models = await fetchModels(config);
+      const models = await fetchModels(config, undefined, userAgent);
       status = models.length ? "ready" : "unknown";
       statusMessage = models.length ? null : "Нет доступных моделей Врата AI";
     } catch {
@@ -630,7 +638,7 @@ async function handleThreadConstruction(
     sendThreadSessionResult(id, threadId, providerThreadId);
     return;
   }
-  const catalog = await fetchModels(config, controller.signal);
+  const catalog = await fetchModels(config, controller.signal, userAgent);
   checkCurrent(threadId, controller);
   const models = buildPiModels(catalog, config.baseUrl);
   if (requestedModel) resolvePiModel(requestedModel, models);
@@ -765,7 +773,7 @@ async function completeSetup(params: TurnStartParams, pending: PendingConstructi
     }
     let config = readConfig(requireDataDir());
     if (!config) throw new SetupError("Добавьте ключ Врата AI для машины треда в настройках плагина");
-    let models = buildPiModels(await fetchModels(config, pending.controller.signal), config.baseUrl);
+    let models = buildPiModels(await fetchModels(config, pending.controller.signal, userAgent), config.baseUrl);
     checkCurrent(threadId, pending.controller);
     const model = normalizeModel(params.options.model) ?? pending.params.model;
     const thinking = buildPiTurnOptions(params.options).thinkingLevel ?? pending.params.thinkingLevel;
@@ -777,7 +785,7 @@ async function completeSetup(params: TurnStartParams, pending: PendingConstructi
     if (!latestConfig) throw new SetupError("Ключ Врата AI удалён. Повторите настройку.");
     if (latestConfig.apiKey !== config.apiKey || latestConfig.baseUrl !== config.baseUrl) {
       config = latestConfig;
-      models = buildPiModels(await fetchModels(config, pending.controller.signal), config.baseUrl);
+      models = buildPiModels(await fetchModels(config, pending.controller.signal, userAgent), config.baseUrl);
       checkCurrent(threadId, pending.controller);
     }
     if (model) {
@@ -981,6 +989,7 @@ export const experimental_providerBridge = experimental_defineProviderBridge({
   handleLine,
   start: (context) => {
     pluginId = context.pluginId;
+    userAgent = buildUserAgent();
     dataDir = context.dataDir;
     redactor = createCredentialRedactor(join(dataDir, "credentials.json"));
     bridgeClosed = false;

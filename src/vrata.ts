@@ -4,6 +4,7 @@ import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AvailableModel } from "@get-bb/plugin-sdk/provider-bridge";
+import { buildUserAgent } from "./user-agent.js";
 
 export const VRATA_PROVIDER_ID = "vrata.tg";
 
@@ -98,12 +99,13 @@ export function apiBaseUrl(value: string): string {
   return `${url.origin}/v1`;
 }
 
-export async function fetchModels(config: VrataConfig, signal?: AbortSignal): Promise<VrataCatalogModel[]> {
+export async function fetchModels(config: VrataConfig, signal?: AbortSignal, userAgent = buildUserAgent()): Promise<VrataCatalogModel[]> {
   const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000);
   async function load(protocol: VrataCatalogProtocol): Promise<VrataCatalogModel[]> {
     const response = await fetch(`${apiBaseUrl(config.baseUrl)}/models`, {
       headers: {
         Authorization: `Bearer ${config.apiKey}`,
+        "User-Agent": userAgent,
         ...(protocol === "anthropic" ? { "Anthropic-Version": "2023-06-01" } : {}),
       },
       signal: requestSignal,
