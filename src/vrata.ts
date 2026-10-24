@@ -11,7 +11,7 @@ export const VRATA_PROVIDER_ID = "vrata.tg";
 export interface VrataConfig { apiKey: string; baseUrl: string }
 export type VrataReasoningLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 export type VrataCatalogProtocol = "openai" | "anthropic";
-const tokenLimit = z.number().int().positive().nullish().catch(undefined);
+const tokenLimit = z.number().int().positive();
 const pricePerMillion = z.string().regex(/^\d+(?:\.\d+)?$/)
   .transform((value) => Number(value) * 1_000_000).pipe(z.number().nonnegative()).optional().catch(undefined);
 const catalogRowSchema = z.object({
@@ -24,7 +24,7 @@ const catalogRowSchema = z.object({
     max_output_tokens: tokenLimit,
     supports_tools: z.boolean().nullish().catch(undefined),
     supports_images: z.boolean().nullish().catch(undefined),
-  }).nullish().catch(undefined),
+  }),
   gateway_pricing: z.object({
     currency: z.literal("RUB"), unit: z.literal("token"),
     prompt: pricePerMillion, completion: pricePerMillion,
@@ -38,8 +38,8 @@ const openaiModels = new Map(getBuiltinModels("openai").map((entry) => [entry.id
 /** Availability and gateway metadata come from the API; Pi owns native reasoning semantics. */
 export function buildPiModels(catalog: VrataCatalogModel[], baseUrl: string): Model<Api>[] {
   const base = apiBaseUrl(baseUrl);
-  return catalog.filter((entry) => entry.gateway_metadata?.supports_tools !== false).map(({ id, protocol, gateway_metadata: metadata, gateway_pricing: pricing }) => {
-    const transport = !metadata?.protocol || metadata.protocol === protocol ? metadata?.verified_transport : undefined;
+  return catalog.filter((entry) => entry.gateway_metadata.supports_tools !== false).map(({ id, protocol, gateway_metadata: metadata, gateway_pricing: pricing }) => {
+    const transport = !metadata.protocol || metadata.protocol === protocol ? metadata.verified_transport : undefined;
     const api = protocol === "anthropic" ? "anthropic-messages"
       : transport === "chat_completions" ? "openai-completions" : "openai-responses";
     const anthropic = api === "anthropic-messages" ? anthropicModels.get(id) : undefined;
@@ -50,13 +50,13 @@ export function buildPiModels(catalog: VrataCatalogModel[], baseUrl: string): Mo
     return {
       ...anthropic,
       ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
-      id, name: metadata?.name ?? id, provider: VRATA_PROVIDER_ID, api,
+      id, name: metadata.name ?? id, provider: VRATA_PROVIDER_ID, api,
       baseUrl: api === "anthropic-messages" ? new URL(base).origin : base,
-      reasoning: true, input: metadata?.supports_images === false ? ["text"] : ["text", "image"],
+      reasoning: true, input: metadata.supports_images === false ? ["text"] : ["text", "image"],
       cost: { input, output: pricing?.completion ?? 0,
         cacheRead: pricing?.input_cache_read ?? input, cacheWrite: pricing?.input_cache_write ?? input },
-      contextWindow: metadata?.max_input_tokens ?? 128_000,
-      maxTokens: metadata?.max_output_tokens ?? 16_384,
+      contextWindow: metadata.max_input_tokens,
+      maxTokens: metadata.max_output_tokens,
     };
   });
 }

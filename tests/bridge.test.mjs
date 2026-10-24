@@ -15,7 +15,8 @@ test("new model names use catalog transports through native Pi and persist selec
         onModels({ request, response }) {
           const requested = request.headers["anthropic-version"] ? "anthropic" : "openai";
           response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: requested === protocol ? [{
-            id: model, gateway_metadata: { protocol, verified_transport: transport, supports_tools: true },
+            id: model, gateway_metadata: { protocol, verified_transport: transport, supports_tools: true,
+              max_input_tokens: 1_000_000, max_output_tokens: 128_000 },
           }] : [] }));
         },
       });
@@ -42,7 +43,9 @@ test("GPT reasoning levels survive discovery, dispatch and session persistence",
   for (const model of ["gpt-6-astra", "gpt-6-luna", "gpt-6.1-sol"]) await t.test(model, async (t) => {
     const f = await fixture(t, {
       onModels({ request, response }) {
-        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: request.headers["anthropic-version"] ? [] : [{ id: model }] }));
+        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: request.headers["anthropic-version"] ? [] : [{
+          id: model, gateway_metadata: { max_input_tokens: 1_000_000, max_output_tokens: 128_000 },
+        }] }));
       },
       onResponses({ response }) { responsesAnswer(response); },
     });
@@ -119,7 +122,9 @@ test("native catalog reflects host key save, rotation and deletion without a set
   const high = catalog.models.find(({ id }) => id === dynamicModel);
   assert.ok(high.supportedReasoningEfforts.some(({ reasoningEffort }) => reasoningEffort === "high"));
   const next = await f.anotherGateway({ onModels({ response }) {
-    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: [{ id: "gpt-next-account" }] }));
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: [{
+      id: "gpt-next-account", gateway_metadata: { max_input_tokens: 1_000_000, max_output_tokens: 128_000 },
+    }] }));
   } });
   f.configure(next, "synthetic-key-b");
   assert.deepEqual((await f.rpc("model/list", {})).result.models.map(({ id }) => id), ["gpt-next-account"]);

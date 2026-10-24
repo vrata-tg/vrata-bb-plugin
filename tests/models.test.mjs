@@ -38,7 +38,7 @@ test("catalog caller cancellation rejects even when one catalog has succeeded", 
   const bothRequested = Promise.withResolvers();
   let count = 0;
   const config = await gateway(t, (request, response) => {
-    if (!request.headers["anthropic-version"]) response.writeHead(200, { "content-type": "application/json" }).end('{"data":[{"id":"mock-code"}]}');
+    if (!request.headers["anthropic-version"]) response.writeHead(200, { "content-type": "application/json" }).end('{"data":[{"id":"mock-code","gateway_metadata":{"max_input_tokens":1000000,"max_output_tokens":128000}}]}');
     if (++count === 2) bothRequested.resolve();
   });
   const pending = fetchModels(config, controller.signal);
@@ -50,7 +50,7 @@ test("catalog caller cancellation rejects even when one catalog has succeeded", 
 test("catalog discovery retains the successful protocol when the other fails", { timeout: 5000 }, async (t) => {
   const config = await gateway(t, (request, response) => {
     if (request.headers["anthropic-version"]) response.writeHead(404).end();
-    else response.writeHead(200, { "content-type": "application/json" }).end('{"data":[{"id":"mock-code","gateway_metadata":{"verified_transport":"messages"}}]}');
+    else response.writeHead(200, { "content-type": "application/json" }).end('{"data":[{"id":"mock-code","gateway_metadata":{"verified_transport":"messages","max_input_tokens":1000000,"max_output_tokens":128000}}]}');
   });
   const models = await fetchModels(config);
   assert.equal(models.length, 1);
@@ -58,14 +58,14 @@ test("catalog discovery retains the successful protocol when the other fails", {
 });
 
 test("catalog metadata updates new models without a plugin model table", async (t) => {
-  let price = "0.000003", contextWindow = 321_000;
+  let price = "0.000003", contextWindow = 321_000, maxTokens = 128_000;
   const config = await gateway(t, (request, response) => {
     const anthropic = !!request.headers["anthropic-version"];
     response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: [{
       id: "new-name-without-a-family", baseUrl: "https://untrusted.invalid", headers: { authorization: "untrusted" },
       gateway_metadata: { name: "Server model", protocol: anthropic ? "anthropic" : "openai",
         verified_transport: anthropic ? "messages" : "chat_completions",
-        max_input_tokens: contextWindow, max_output_tokens: 12_345, supports_tools: true, supports_images: false },
+        max_input_tokens: contextWindow, max_output_tokens: maxTokens, supports_tools: true, supports_images: false },
       gateway_pricing: { currency: "RUB", unit: "token", prompt: price, completion: "0.000009",
         input_cache_read: "0.000001", input_cache_write: "0.000004" },
     }] }));
@@ -78,39 +78,44 @@ test("catalog metadata updates new models without a plugin model table", async (
   assert.equal(first.name, "Server model");
   assert.deepEqual(first.input, ["text"]);
   assert.equal(first.contextWindow, contextWindow);
-  assert.equal(first.maxTokens, 12_345);
+  assert.equal(first.maxTokens, maxTokens);
   assert.deepEqual(first.cost, { input: 3, output: 9, cacheRead: 1, cacheWrite: 4 });
-  price = "0.000007"; contextWindow = 654_000;
+  price = "0.000007"; contextWindow = 654_000; maxTokens = 256_000;
   const [updated] = await load();
   assert.equal(updated.cost.input, 7);
   assert.equal(updated.contextWindow, contextWindow);
+  assert.equal(updated.maxTokens, maxTokens);
 });
 
 test("catalog validation keeps unsafe values out of Pi while honoring explicit capabilities", async (t) => {
   const config = await gateway(t, (request, response) => {
     response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: request.headers["anthropic-version"] ? [] : [
-      { id: "no-tools", gateway_metadata: { supports_tools: false, max_input_tokens: "invalid" } },
+      { id: "no-tools", gateway_metadata: { supports_tools: false, max_input_tokens: 1_000_000, max_output_tokens: 128_000 } },
       { id: "legacy" },
-      { id: "invalid-values", gateway_metadata: { max_input_tokens: -1, max_output_tokens: 1e100,
+      { id: "missing-input", gateway_metadata: { max_output_tokens: 128_000 } },
+      { id: "missing-output", gateway_metadata: { max_input_tokens: 1_000_000 } },
+      { id: "invalid-limits", gateway_metadata: { max_input_tokens: -1, max_output_tokens: 1e100 } },
+      { id: "invalid-values", gateway_metadata: { max_input_tokens: 1_000_000, max_output_tokens: 128_000,
         supports_images: false, verified_transport: "https://untrusted.invalid" },
         gateway_pricing: { currency: "RUB", unit: "token", prompt: "1".repeat(400), completion: "-3" } },
-      { id: "wrong-currency", gateway_pricing: { currency: "USD", unit: "token", prompt: "1" } },
+      { id: "wrong-currency", gateway_metadata: { max_input_tokens: 1_000_000, max_output_tokens: 128_000 },
+        gateway_pricing: { currency: "USD", unit: "token", prompt: "1" } },
     ] }));
   });
   const models = buildPiModels(await fetchModels(config), config.baseUrl);
-  assert.deepEqual(models.map(({ id }) => id), ["legacy", "invalid-values", "wrong-currency"]);
+  assert.deepEqual(models.map(({ id }) => id), ["invalid-values", "wrong-currency"]);
   for (const model of models) {
-    assert.equal(model.contextWindow, 128_000);
-    assert.equal(model.maxTokens, 16_384);
+    assert.equal(model.contextWindow, 1_000_000);
+    assert.equal(model.maxTokens, 128_000);
     assert.deepEqual(model.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
   }
-  assert.deepEqual(models[1].input, ["text"]);
+  assert.deepEqual(models[0].input, ["text"]);
 });
 
 test("transport selection follows catalog metadata independently of the model name", () => {
   for (const id of ["gemini-fixture", "unrelated-fixture"]) {
     const catalog = ["chat_completions", "responses", undefined].map((verified_transport) => ({
-      id, protocol: "openai", gateway_metadata: { verified_transport },
+      id, protocol: "openai", gateway_metadata: { verified_transport, max_input_tokens: 1_000_000, max_output_tokens: 128_000 },
     }));
     assert.deepEqual(buildPiModels(catalog, "https://example.test").map((model) => model.api),
       ["openai-completions", "openai-responses", "openai-responses"]);
@@ -119,9 +124,9 @@ test("transport selection follows catalog metadata independently of the model na
 
 test("projection retains Pi reasoning maps and native Anthropic compatibility", () => {
   const catalog = [
-    { id: "gpt-6-astra", protocol: "openai", gateway_metadata: { verified_transport: "chat_completions" } },
-    { id: "gpt-6-luna", protocol: "openai" },
-    { id: "claude-sonnet-5-5", protocol: "anthropic" },
+    { id: "gpt-6-astra", protocol: "openai", gateway_metadata: { verified_transport: "chat_completions", max_input_tokens: 1_000_000, max_output_tokens: 128_000 } },
+    { id: "gpt-6-luna", protocol: "openai", gateway_metadata: { max_input_tokens: 1_000_000, max_output_tokens: 128_000 } },
+    { id: "claude-sonnet-5-5", protocol: "anthropic", gateway_metadata: { max_input_tokens: 1_000_000, max_output_tokens: 128_000 } },
   ];
   const [astra, luna, sonnet] = buildPiModels(catalog, "https://example.test");
   assert.deepEqual(supportedReasoningLevels(astra), ["low", "medium", "high", "xhigh", "max"]);
