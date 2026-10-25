@@ -793,7 +793,10 @@ async function completeSetup(params: TurnStartParams, pending: PendingConstructi
       if (!candidate) throw new SetupError("Выбранная модель недоступна");
       const levels = supportedReasoningLevels(candidate);
       const requested = thinking === "off" ? "none" : thinking;
-      if (requested && !levels.includes(requested)) throw new SetupError("Модель не поддерживает выбранный уровень рассуждений");
+      // BB uses "none" as its default when there is no selectable effort.
+      if (requested && !levels.includes(requested) && (levels.length > 0 || requested !== "none")) {
+        throw new SetupError("Модель не поддерживает выбранный уровень рассуждений");
+      }
     }
     checkCurrent(threadId, pending.controller);
     await startPiThreadSession(threadId, pending.providerThreadId, { ...pending.params, model, thinkingLevel: thinking }, models, pending.controller);

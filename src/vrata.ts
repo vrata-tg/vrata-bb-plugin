@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
+import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AvailableModel } from "@get-bb/plugin-sdk/provider-bridge";
@@ -25,6 +26,8 @@ const catalogRowSchema = z.object({
     max_output_tokens: tokenLimit,
     supports_tools: z.boolean().nullish().catch(undefined),
     supports_images: z.boolean().nullish().catch(undefined),
+    supports_reasoning: z.boolean().nullish().catch(undefined),
+    reasoning_levels: z.array(z.string().min(1)).nullish().catch(undefined),
   }),
   gateway_pricing: z.object({
     currency: z.literal("RUB"), unit: z.literal("token"),
@@ -36,24 +39,44 @@ export type VrataCatalogModel = z.infer<typeof catalogRowSchema> & { protocol: V
 const anthropicModels = new Map(getBuiltinModels("anthropic").map((entry) => [entry.id, entry]));
 const openaiModels = new Map(getBuiltinModels("openai").map((entry) => [entry.id, entry]));
 
+function verifiedTransport({ protocol, gateway_metadata: metadata }: VrataCatalogModel) {
+  if (metadata.protocol && metadata.protocol !== protocol) return undefined;
+  const transport = metadata.verified_transport;
+  return protocol === "anthropic"
+    ? transport === "messages" ? transport : undefined
+    : transport === "responses" || transport === "chat_completions" ? transport : undefined;
+}
+
 /** Availability and gateway metadata come from the API; Pi owns native reasoning semantics. */
 export function buildPiModels(catalog: VrataCatalogModel[], baseUrl: string): Model<Api>[] {
   const base = apiBaseUrl(baseUrl);
-  return catalog.filter((entry) => entry.gateway_metadata.supports_tools !== false).map(({ id, protocol, gateway_metadata: metadata, gateway_pricing: pricing }) => {
-    const transport = !metadata.protocol || metadata.protocol === protocol ? metadata.verified_transport : undefined;
+  return catalog.filter((entry) => entry.gateway_metadata.supports_tools !== false).map((entry) => {
+    const { id, protocol, gateway_metadata: metadata, gateway_pricing: pricing } = entry;
+    const transport = verifiedTransport(entry);
     const api = protocol === "anthropic" ? "anthropic-messages"
       : transport === "chat_completions" ? "openai-completions" : "openai-responses";
     const anthropic = api === "anthropic-messages" ? anthropicModels.get(id) : undefined;
+    const levels = metadata.reasoning_levels;
     // Pi's Chat adapter sends an off effort only when it has an explicit mapping.
-    const thinkingLevelMap = anthropic?.thinkingLevelMap ?? openaiModels.get(id)?.thinkingLevelMap
+    const thinkingLevelMap = levels != null
+      ? Object.fromEntries(MODEL_THINKING_LEVELS.map((level) => {
+        const effort = level === "off" ? "none" : level;
+        return [level, levels.includes(effort) ? effort : null];
+      }))
+      : anthropic?.thinkingLevelMap ?? openaiModels.get(id)?.thinkingLevelMap
       ?? (api === "openai-completions" ? { off: "none" } : undefined);
     const input = pricing?.prompt ?? 0;
     return {
       ...anthropic,
+      // Pi's managed-effort mode otherwise inserts high even without a selection.
+      ...(anthropic?.compat?.supportsMidConvoEffort === true
+        && (metadata.supports_reasoning === false || levels?.length === 0)
+        ? { compat: { ...anthropic.compat, supportsMidConvoEffort: false } } : {}),
       ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
       id, name: metadata.name ?? id, provider: VRATA_PROVIDER_ID, api,
       baseUrl: api === "anthropic-messages" ? new URL(base).origin : base,
-      reasoning: true, input: metadata.supports_images === false ? ["text"] : ["text", "image"],
+      reasoning: metadata.supports_reasoning ?? true,
+      input: metadata.supports_images === false ? ["text"] : ["text", "image"],
       cost: { input, output: pricing?.completion ?? 0,
         cacheRead: pricing?.input_cache_read ?? input, cacheWrite: pricing?.input_cache_write ?? input },
       contextWindow: metadata.max_input_tokens,
@@ -122,12 +145,22 @@ export async function fetchModels(config: VrataConfig, signal?: AbortSignal, use
   }
   const models = new Map<string, VrataCatalogModel>();
   for (const model of openai.status === "fulfilled" ? openai.value : []) models.set(model.id, model);
-  for (const model of anthropic.status === "fulfilled" ? anthropic.value : []) models.set(model.id, model);
+  for (const model of anthropic.status === "fulfilled" ? anthropic.value : []) {
+    const existing = models.get(model.id);
+    // Prefer verified OpenAI effort transport, except for Pi's native Anthropic
+    // models advertising Messages. Unknown catalogs keep legacy precedence.
+    if (!existing || !verifiedTransport(existing)
+      || (verifiedTransport(model) === "messages" && anthropicModels.has(model.id))) {
+      models.set(model.id, model);
+    }
+  }
   return [...models.values()];
 }
 
 export function supportedReasoningLevels(model: Model<Api>): VrataReasoningLevel[] {
+  if (!model.reasoning) return [];
   return getSupportedThinkingLevels(model)
+    // BB SDK 0.4.34 rejects minimal in provider capabilities and turn options.
     .filter((level) => level !== "minimal")
     .map((level) => level === "off" ? "none" : level);
 }

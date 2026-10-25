@@ -63,6 +63,43 @@ test("GPT reasoning levels survive discovery, dispatch and session persistence",
   });
 });
 
+test("models without selectable efforts accept the BB default without inventing native none", async (t) => {
+  for (const [transport, path, model = "no-selectable-effort"] of [
+    ["chat_completions", "/v1/chat/completions"], ["responses", "/v1/responses"],
+    ["messages", "/v1/messages"], ["messages", "/v1/messages", "claude-sonnet-5-5"],
+  ]) {
+    for (const capability of [{ supports_reasoning: false }, { reasoning_levels: [] }]) {
+      await t.test(`${transport}/${model}/${Object.keys(capability)[0]}`, async (t) => {
+        const protocol = transport === "messages" ? "anthropic" : "openai";
+        const f = await fixture(t, {
+          onModels({ request, response }) {
+            const requested = request.headers["anthropic-version"] ? "anthropic" : "openai";
+            response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: requested === protocol ? [{
+              id: model, gateway_metadata: { protocol, verified_transport: transport,
+                max_input_tokens: 1_000_000, max_output_tokens: 128_000, ...capability },
+            }] : [] }));
+          },
+        });
+        const advertised = (await f.rpc("model/list", {})).result.models[0];
+        assert.deepEqual(advertised.supportedReasoningEfforts, []);
+        assert.equal(advertised.defaultReasoningEffort, "none");
+        await f.start({ options: { model: undefined, reasoningLevel: advertised.defaultReasoningEffort } });
+        for (let turn = 0; turn < 2; turn++) {
+          await f.turn("Use the model default", { model, reasoningLevel: "none" });
+          assert.equal((await f.boundary()).status, "completed");
+          const { path: actualPath, body } = f.gateway.requests.at(-1);
+          assert.equal(actualPath, path);
+          assert.equal(body.reasoning_effort, undefined);
+          assert.equal(body.reasoning, undefined);
+          assert.equal(body.output_config?.effort, undefined);
+          assert.ok(body.messages?.every((message) => message.output_config?.effort === undefined) ?? true);
+          assert.ok(body.thinking === undefined || body.thinking.type === "disabled");
+        }
+      });
+    }
+  }
+});
+
 async function saveLocalCredentials(t, f) {
   const harness = experimental_createHostEntryHarness(host, {
     experimental_paths: { dataDir: join(f.root, "host-data"), tempDir: join(f.root, "temp") },
