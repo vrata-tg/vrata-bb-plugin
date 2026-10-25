@@ -6,6 +6,59 @@ import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/
 import host from "../dist/host.js";
 import { dynamicModel, dynamicTool, fixture, models, responsesAnswer, sleep } from "./bridge-fixture.mjs";
 
+test("Opus High preserves thinking text and token usage through the embedded bridge", async (t) => {
+  const model = "claude-opus-5-5";
+  const f = await fixture(t, {
+    onModels({ request, response }) {
+      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+        data: request.headers["anthropic-version"] ? [{ id: model, gateway_metadata: {
+          protocol: "anthropic", verified_transport: "messages", supports_reasoning: true,
+          reasoning_levels: ["low", "medium", "high", "xhigh", "max"],
+          max_input_tokens: 1_000_000, max_output_tokens: 128_000,
+        } }] : [],
+      }));
+    },
+    onAnthropic({ response }) {
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      for (const event of [
+        { type: "message_start", message: { id: "msg-opus", type: "message", role: "assistant", model,
+          content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } },
+        { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Check the available tools." } },
+        { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "synthetic-signature" } },
+        { type: "content_block_stop", index: 0 },
+        { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } },
+        { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Tools are available." } },
+        { type: "content_block_stop", index: 1 },
+        { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null },
+          usage: { output_tokens: 9, output_tokens_details: { thinking_tokens: 5 } } },
+        { type: "message_stop" },
+      ]) response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      response.end();
+    },
+  });
+  await f.start({ dynamicTools: [dynamicTool], options: { model, reasoningLevel: "high" } });
+  await f.turn("Check Opus thinking", { model, reasoningLevel: "high" });
+  assert.equal((await f.boundary()).status, "completed");
+  const body = f.gateway.requests[0].body;
+  assert.equal(body.thinking.type, "adaptive");
+  assert.equal(body.thinking.display, "summarized");
+  assert.equal(body.output_config.effort, "high");
+  assert.ok(["read", "write", "edit", "bash", dynamicTool.name].every((name) => body.tools.some((tool) => tool.name === name)));
+  const thinking = f.events().filter((event) => event.type === "item/reasoning/textDelta").map((event) => event.delta).join("");
+  assert.equal(thinking, "Check the available tools.");
+  const saved = f.saved();
+  assert.equal(saved.thinkingLevel, "high");
+  const assistant = saved.messages.findLast((message) => message.role === "assistant");
+  assert.equal(assistant.content.find((block) => block.type === "thinking").thinking, thinking);
+  assert.equal(assistant.usage.reasoning, 5);
+  const usage = f.events().findLast((event) => event.type === "thread/tokenUsage/updated").tokenUsage;
+  assert.equal(usage.last.reasoningOutputTokens, 5);
+  assert.equal(usage.total.reasoningOutputTokens, 5);
+  assert.equal(usage.last.outputTokens, 9);
+  assert.equal(usage.last.totalTokens, 19);
+});
+
 test("new model names use catalog transports through native Pi and persist selection", async (t) => {
   for (const [transport, path] of [["chat_completions", "/v1/chat/completions"], ["responses", "/v1/responses"], ["messages", "/v1/messages"]]) {
     await t.test(transport, async (t) => {

@@ -17,6 +17,7 @@ const message = z.object({
     input: z.number().optional(), output: z.number().optional(),
     cacheRead: z.number().optional(), cacheWrite: z.number().optional(),
     totalTokens: z.number().optional(),
+    reasoning: z.number().optional(),
   }).optional(),
 });
 const endFields = {
@@ -186,7 +187,8 @@ export function createPiDeltaTranslator() {
           const cachedInputTokens = toNonNegativeNumber(last.usage.cacheRead) + toNonNegativeNumber(last.usage.cacheWrite);
           const usage = {
             totalTokens: toPositiveNumber(last.usage.totalTokens) ?? inputTokens + outputTokens + cachedInputTokens,
-            inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens: 0,
+            inputTokens, outputTokens, cachedInputTokens,
+            reasoningOutputTokens: toNonNegativeNumber(last.usage.reasoning),
           };
           total = addTokenUsage(total, usage);
           deltas.push({ kind: "usage", total, last: usage, modelContextWindow: toPositiveNumber(context.modelContextWindow) ?? null });
