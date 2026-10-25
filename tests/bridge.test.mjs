@@ -57,6 +57,9 @@ test("Opus High preserves thinking text and token usage through the embedded bri
   assert.equal(usage.total.reasoningOutputTokens, 5);
   assert.equal(usage.last.outputTokens, 9);
   assert.equal(usage.last.totalTokens, 19);
+  const messages = f.events().filter((event) => event.type === "item/completed" && event.item.type === "agentMessage");
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].item.text, "Tools are available.");
 });
 
 test("new model names use catalog transports through native Pi and persist selection", async (t) => {
