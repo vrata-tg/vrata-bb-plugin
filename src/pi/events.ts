@@ -17,6 +17,7 @@ const message = z.object({
     input: z.number().optional(), output: z.number().optional(),
     cacheRead: z.number().optional(), cacheWrite: z.number().optional(),
     totalTokens: z.number().optional(),
+    reasoning: z.number().optional(),
   }).optional(),
 });
 const endFields = {
@@ -133,6 +134,7 @@ function toolShape(name: string, args: unknown, cwd?: string): DeltaItemShape {
 export function createPiDeltaTranslator() {
   const tools = new Map<string, DeltaItemShape>();
   let total = { ...ZERO_TOKEN_USAGE };
+  let assistantMessageEnded = false;
 
   function translate(event: unknown, context: EventContext = {}): ThreadDelta[] {
     if (isRecord(event) && typeof event.type === "string" && ignoredEvents.has(event.type)) return [];
@@ -141,11 +143,17 @@ export function createPiDeltaTranslator() {
     const e = parsed.data;
     switch (e.type) {
       case "agent_start":
+        assistantMessageEnded = false;
         return [{ kind: "turn.open" }];
 
       case "message_start":
       case "message_end": {
         if (!["assistant", "custom", "toolResult", "user"].includes(e.message.role)) return unhandled(event);
+        if (e.message.role === "assistant") {
+          assistantMessageEnded = e.type === "message_end";
+          const text = assistantMessageEnded ? messageText(e.message.content) : undefined;
+          return text ? [{ kind: "item.textClose", key: assistantKey, channel: "agentMessage", text }] : [];
+        }
         if (e.type !== "message_start" || e.message.role !== "custom" || !e.message.display) return [];
         const text = messageText(e.message.content);
         return text ? [{ kind: "input.provider", text }] : [];
@@ -178,7 +186,8 @@ export function createPiDeltaTranslator() {
         tools.clear();
         if (error) return [{ kind: "provider.error", message: "Provider error", detail: error }];
         const deltas: ThreadDelta[] = [];
-        const text = messageText(last?.content);
+        // Native message_end already closed the stream; end-only events still carry final text.
+        const text = assistantMessageEnded ? undefined : messageText(last?.content);
         if (text) deltas.push({ kind: "item.textClose", key: assistantKey, channel: "agentMessage", text });
         if (last?.usage) {
           const inputTokens = toNonNegativeNumber(last.usage.input);
@@ -186,7 +195,8 @@ export function createPiDeltaTranslator() {
           const cachedInputTokens = toNonNegativeNumber(last.usage.cacheRead) + toNonNegativeNumber(last.usage.cacheWrite);
           const usage = {
             totalTokens: toPositiveNumber(last.usage.totalTokens) ?? inputTokens + outputTokens + cachedInputTokens,
-            inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens: 0,
+            inputTokens, outputTokens, cachedInputTokens,
+            reasoningOutputTokens: toNonNegativeNumber(last.usage.reasoning),
           };
           total = addTokenUsage(total, usage);
           deltas.push({ kind: "usage", total, last: usage, modelContextWindow: toPositiveNumber(context.modelContextWindow) ?? null });
