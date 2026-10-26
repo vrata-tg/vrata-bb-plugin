@@ -65,7 +65,7 @@ function client(t, fetcher, { hosts = [
   { id: "host-a", name: "Machine A", status: "connected" },
   { id: "host-b", name: "Machine B", status: "connected" },
 ], listHosts = () => hosts, getConfiguration = () => ({ configured: true, baseUrl: "https://api.vrata.tg" }) } = {}) {
-  const dom = new JSDOM('<body><aside><div data-sidebar="footer"><a>Settings</a></div></aside></body>', { pretendToBeVisual: true });
+  const dom = new JSDOM('<head><style>[data-sidebar="footer"] { height: 48px; }</style></head><body><aside><div data-sidebar="footer"><a>Settings</a></div></aside></body>', { pretendToBeVisual: true });
   const originals = new Map();
   const timers = new Map();
   const sources = [];
@@ -123,6 +123,24 @@ function client(t, fetcher, { hosts = [
 }
 
 const rpcResponse = (result) => new Response(JSON.stringify({ ok: true, result }), { headers: { "content-type": "application/json" } });
+
+test("balance releases the fixed footer height and restores it on disposal", async (t) => {
+  const ui = client(t, async () => rpcResponse(balance));
+  await settle();
+  const footer = ui.document.querySelector('[data-sidebar="footer"]');
+  assert.equal(ui.dom.window.getComputedStyle(footer).height, "auto");
+
+  // Removing the balance also releases the override before the observer remounts it.
+  const row = footer.querySelector("[data-vrata-balance]");
+  row.remove();
+  assert.equal(ui.dom.window.getComputedStyle(footer).height, "48px");
+  await settle();
+  assert.equal(ui.dom.window.getComputedStyle(footer).height, "auto");
+
+  ui.controller.abort();
+  assert.equal(ui.dom.window.getComputedStyle(footer).height, "48px");
+  assert.equal(ui.document.head.querySelectorAll("style").length, 1);
+});
 
 test("footer automatically finds a connected machine with a key", async (t) => {
   for (const first of ["disconnected", "unconfigured", "unavailable", "configured"]) {
