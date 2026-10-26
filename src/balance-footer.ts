@@ -8,6 +8,10 @@ const footerSelector = '[data-sidebar="footer"]';
 
 export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptContext): () => void {
   if (signal.aborted) return () => {};
+  // macOS desktop chrome fixes the footer to one toolbar row; allow room for the balance.
+  const style = document.createElement("style");
+  style.textContent = `${footerSelector}:has(> [data-vrata-balance]) { height: auto; }`;
+  document.head.append(style);
   const rows = new Map<Element, HTMLDivElement>();
   const controller = new AbortController();
   let hosts: PluginRpcResult<typeof configurationContract.listHosts> = [];
@@ -237,6 +241,7 @@ export function mountBalanceFooter({ pluginId, signal }: PluginContentScriptCont
     if (disposed) return;
     disposed = true;
     observer.disconnect();
+    style.remove();
     window.clearTimeout(timer);
     events.removeEventListener("message", onRefresh);
     events.close();
