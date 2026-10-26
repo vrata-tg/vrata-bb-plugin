@@ -107,7 +107,13 @@ export class PiRpcChild {
     this.child = spawn(launch.command, [...launch.args, ...args.args], {
       cwd: args.cwd,
       // Desktop BB's execPath is Electron; the embedded script needs Node mode.
-      env: { ...args.env, ELECTRON_RUN_AS_NODE: "1" },
+      env: {
+        ...args.env,
+        ELECTRON_RUN_AS_NODE: "1",
+        // Cocoa must not associate the background agent with BB's GUI bundle.
+        __CFBundleIdentifier: undefined,
+      },
+      windowsHide: true,
       stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
     });
     experimental_recordProviderChildIo(this.child, {
