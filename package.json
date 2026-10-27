@@ -1,6 +1,6 @@
 {
   "name": "@vrata-ai/bb-plugin",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "type": "module",
   "imports": {
     "#vrata-pi-runtime": "./packaging/pi/runtime.js"
