@@ -23,6 +23,10 @@ export const NO_REQUEST_TIMEOUT = 0;
 const SIGTERM_GRACE_MS = 4_000;
 const SIGKILL_ESCALATION_MS = 4_000;
 
+// Pi sets process.title at startup. On macOS its native setter checks into
+// LaunchServices, creating a Dock app even in Electron's Node mode.
+const MACOS_BACKGROUND_PRELOAD = `data:text/javascript,let title=process.title;Object.defineProperty(process,"title",{get:()=>title,set:value=>{title=String(value)}});`;
+
 export interface PiRpcChildExitInfo {
   code: number | null;
   signal: NodeJS.Signals | null;
@@ -104,7 +108,8 @@ export class PiRpcChild {
       resolveSettledExit = resolve;
     });
     const launch = args.launch;
-    this.child = spawn(launch.command, [...launch.args, ...args.args], {
+    const preload = process.platform === "darwin" ? ["--import", MACOS_BACKGROUND_PRELOAD] : [];
+    this.child = spawn(launch.command, [...preload, ...launch.args, ...args.args], {
       cwd: args.cwd,
       // Desktop BB's execPath is Electron; the embedded script needs Node mode.
       env: {
