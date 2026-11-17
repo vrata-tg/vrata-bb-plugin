@@ -203,9 +203,10 @@ function VrataIcon({ className }: { className?: string }) {
 
 export default definePluginApp((app) => {
   app.slots.navPanel({ id: "setup", title: "Врата AI", icon: "KeyRound", path: "setup", component: SetupPage });
-  app.slots.experimental_providerIcon({ providerId: "vrata", icon: VrataIcon });
+  const providerIcon = { providerKind: "agent", providerId: "vrata", icon: VrataIcon } as const;
+  app.slots.experimental_providerIcon(providerIcon);
   app.contentScripts.register({ id: "account-balance", mount: mountBalanceFooter });
-  app.slots.settingsSection({ id: "machine-auth", title: "Врата AI", component: MachineSettings });
+  app.slots.settingsSection({ id: "machine-auth", title: "Врата AI", component: () => <MachineSettings /> });
   app.slots.sidebarFooterAction({ id: "settings", title: "Настройки Врата AI", icon: "KeyRound", run: ({ openSettings }) => openSettings() });
   app.slots.pendingInteraction({ id: "api-key", component: KeySetupLink });
 });

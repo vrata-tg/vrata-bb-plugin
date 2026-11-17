@@ -19,7 +19,14 @@ function spawnOnPlatform(platform, args) {
 for (const platform of ["darwin", "linux", "win32"]) {
   test(`Pi startup preserves RPC and argv with ${platform} process titles`, async (t) => {
     const root = await mkdtemp(join(tmpdir(), "vrata-title-"));
-    t.after(() => rm(root, { recursive: true, force: true }));
+    let child;
+    t.after(async () => {
+      try {
+        await child?.closeGracefully();
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
     const witness = join(root, "native-title.cjs");
     await writeFile(witness, `
       let title = "native-initial";
@@ -29,7 +36,7 @@ for (const platform of ["darwin", "linux", "win32"]) {
         set: value => { title = String(value); nativeTitleWrites.push(title); },
       });
     `);
-    const child = spawnOnPlatform(platform, {
+    child = spawnOnPlatform(platform, {
       launch: { command: process.execPath, args: ["--require", witness, "--eval", `
         process.title = "pi-rpc";
         process.title = "pi-working";
@@ -42,7 +49,6 @@ for (const platform of ["darwin", "linux", "win32"]) {
       cwd: root, env: buildPiChildEnv({}), args: ["--mode", "rpc"],
       onEvent() {}, onChannelMessage() {}, onExit() {}, recordThreadId: null,
     });
-    t.after(() => child.closeGracefully());
     assert.deepEqual(await child.requestOk({ type: "get_state" }), {
       title: "pi-working", writes: platform === "darwin" ? [] : ["pi-rpc", "pi-working"],
       argv: ["--mode", "rpc"],
@@ -53,7 +59,14 @@ for (const platform of ["darwin", "linux", "win32"]) {
 test("embedded Pi serves RPC on macOS without calling the native title setter", async (t) => {
   const { preparePiRuntime } = await import("../dist/tests/pi-runtime.js");
   const root = await mkdtemp(join(tmpdir(), "vrata-native-title-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  let child;
+  t.after(async () => {
+    try {
+      await child?.closeGracefully();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   const runtime = await preparePiRuntime(root);
   const witness = join(root, "native-title.cjs");
   await writeFile(witness, `
@@ -62,13 +75,12 @@ test("embedded Pi serves RPC on macOS without calling the native title setter", 
       set() { throw new Error("Pi called the native process title setter"); },
     });
   `);
-  const child = spawnOnPlatform("darwin", {
+  child = spawnOnPlatform("darwin", {
     launch: { command: process.execPath, args: ["--require", witness, runtime.rpcEntry] },
     cwd: root, env: buildPiChildEnv({ ...runtime.env, PI_TELEMETRY: "off" }),
     args: ["--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--session-dir", runtime.sessionDir],
     onEvent() {}, onChannelMessage() {}, onExit() {}, recordThreadId: null,
   });
-  t.after(() => child.closeGracefully());
   assert.equal((await child.requestOk({ type: "get_state" })).isStreaming, false);
 });
 

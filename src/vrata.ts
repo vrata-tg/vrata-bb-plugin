@@ -167,11 +167,12 @@ export function supportedReasoningLevels(model: Model<Api>): VrataReasoningLevel
 
 /** Convert server-discovered models to the BB bridge selection contract. */
 export function buildPiAvailableModels(piModels: Model<Api>[]): { models: AvailableModel[]; selectedOnlyModels: AvailableModel[] } {
-  const models = piModels.map((model, index): AvailableModel => {
+  const models = piModels.map((model, index): AvailableModel & { reasoningDiscovery: "known" } => {
     const levels = supportedReasoningLevels(model);
     return {
       id: model.id, model: model.id, displayName: model.name, routeProviderId: "vrata",
       description: "Vrata.tg reasoning, multimodal model via Pi",
+      reasoningDiscovery: "known",
       supportedReasoningEfforts: levels.map((level) => ({
         reasoningEffort: level, description: level === "none" ? "No extended thinking" : `${level} reasoning`,
       })),
